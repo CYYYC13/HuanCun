@@ -8,7 +8,7 @@ import huancun.MetaData._
 import huancun._
 import huancun.debug.{DirectoryLogger, TypeId}
 import huancun.utils._
-import utility.{ParallelMax, ParallelPriorityMux}
+import utility.{ParallelMax, ParallelMin, ParallelPriorityMux}
 
 trait HasClientInfo { this: HasHuanCunParameters =>
   // assume all clients have same params
@@ -23,11 +23,29 @@ trait HasClientInfo { this: HasHuanCunParameters =>
   val clientTagBits = addressBits - clientSetBits - offsetBits
 }
 
+class DLCounterEntry(implicit p: Parameters) extends HuanCunBundle {
+  val D_L = UInt(10.W)
+  val L = UInt(10.W)
+  val L_sum = UInt(10.W)
+}
+
+/*
+class BinCounterEntry(implicit p: Parameters) extends HuanCunBundle {
+  val DLCounter = Vec(8, new DLCounterEntry())
+}
+*/
+
 class SelfDirEntry(implicit p: Parameters) extends HuanCunBundle {
   val dirty = Bool()
   val state = UInt(stateBits.W)
   val clientStates = Vec(clientBits, UInt(stateBits.W))
   val prefetch = if (hasPrefetchBit) Some(Bool()) else None // whether the block is prefetched
+  // for L3-replacement
+  // bin number - (tripCount, useCount)
+  // 0-(0,0), 1-(0,1), 2-(0,2), 3-(0,3),
+  // 4-(1,0), 5-(1,1), 6-(1,2), 7-(1,3)
+  val binNumber = UInt(3.W)
+  val replAge = UInt(2.W)
 }
 
 class ClientDirEntry(implicit p: Parameters) extends HuanCunBundle {
@@ -40,6 +58,9 @@ class SelfDirResult(implicit p: Parameters) extends SelfDirEntry {
   val way = UInt(wayBits.W)
   val tag = UInt(tagBits.W)
   val error = Bool()
+  // for L3-replacement
+  val meta_allways = Vec(cacheParams.ways, new SelfDirEntry())
+  val oldAge = UInt(2.W) // save old age to directory
 }
 
 class ClientDirResult(implicit p: Parameters) extends HuanCunBundle with HasClientInfo {
@@ -59,6 +80,7 @@ class ClientDirResult(implicit p: Parameters) extends HuanCunBundle with HasClie
 class DirResult(implicit p: Parameters) extends BaseDirResult with HasClientInfo {
   val self = new SelfDirResult
   val clients = new ClientDirResult
+  val binCounter = new DLCounterEntry
   val sourceId = UInt(sourceIdBits.W)
   val set = UInt(setBits.W)
   val replacerInfo = new ReplacerInfo
@@ -86,6 +108,8 @@ class SelfDirWrite(implicit p: Parameters) extends BaseDirWrite {
   val set = UInt(setBits.W)
   val way = UInt(wayBits.W)
   val data = new SelfDirEntry
+  val meta_allways = Vec(cacheParams.ways, new SelfDirEntry)
+  val oldAge = UInt(2.W)
 }
 
 class ClientDirWrite(implicit p: Parameters) extends HuanCunBundle with HasClientInfo {
@@ -98,6 +122,11 @@ class ClientDirWrite(implicit p: Parameters) extends HuanCunBundle with HasClien
     this.way := way
     this.data := data
   }
+}
+
+class BinCounterWrite(implicit p: Parameters) extends HuanCunBundle {
+  val binNumber = UInt(3.W)
+  val DLCounter = new DLCounterEntry
 }
 
 trait NonInclusiveCacheReplacerUpdate { this: HasUpdate =>
@@ -115,6 +144,7 @@ class DirectoryIO(implicit p: Parameters) extends BaseDirectoryIO[DirResult, Sel
   val tagWReq = Flipped(DecoupledIO(new SelfTagWrite))
   val clientDirWReq = Flipped(DecoupledIO(new ClientDirWrite))
   val clientTagWreq = Flipped(DecoupledIO(new ClientTagWrite))
+  val binWReq = Flipped(DecoupledIO(new BinCounterWrite))
 }
 
 class Directory(implicit p: Parameters)
@@ -191,11 +221,13 @@ class Directory(implicit p: Parameters)
       },
       dir_hit_fn = dirs => Cat(dirs.map(_.state =/= MetaData.INVALID)).orR,
       invalid_way_sel = client_invalid_way_fn,
+      meta_allways_flag = false,
       replacement = "random"
     )
   )
 
   def selfHitFn(dir: SelfDirEntry): Bool = dir.state =/= MetaData.INVALID
+  /*
   def self_invalid_way_sel(metaVec: Seq[SelfDirEntry], repl: UInt): (Bool, UInt) = {
     // 1.try to find a invalid way
     val invalid_vec = metaVec.map(_.state === MetaData.INVALID)
@@ -212,6 +244,34 @@ class Directory(implicit p: Parameters)
       Mux(has_invalid_way, invalid_way, Mux(repl_way_is_trunk, repl, trunk_way))
       )
   }
+   */
+
+  // add L3-replacement
+    // do not use repl, which is made by old replacement in SubDirectory
+  def self_invalid_way_sel(metaVec: Seq[SelfDirEntry], repl: UInt): (Bool, UInt) = {
+    // 1.try to find a invalid way
+    val invalid_vec = metaVec.map(_.state === MetaData.INVALID)
+    val has_invalid_way = Cat(invalid_vec).orR()
+    val invalid_way = ParallelPriorityMux(invalid_vec.zipWithIndex.map(x => x._1 -> x._2.U(wayBits.W)))
+    // 2.if there is no invalid way, then try to find a way with minimum age
+    // 3. if there are two or more ways with the same minimum age, chose the way with minimum way_id
+    val age_vec = metaVec.map(_.replAge)
+    val min_age = ParallelMin(age_vec)
+    val min_age_way = WireInit(invalid_way)
+    age_vec.zipWithIndex.reverse.foreach {
+      case(m, i) =>
+        when(m === min_age) {
+          min_age_way := i.U
+        }
+    }
+    (
+      has_invalid_way,
+      Mux(has_invalid_way, invalid_way, min_age_way)
+    )
+  }
+
+
+
   val selfDir = Module(
     new SubDirectoryDoUpdate[SelfDirEntry](
       wports = mshrsAll,
@@ -226,9 +286,14 @@ class Directory(implicit p: Parameters)
       },
       dir_hit_fn = selfHitFn,
       self_invalid_way_sel,
+      meta_allways_flag = true,
       replacement = cacheParams.replacement
     ) with NonInclusiveCacheReplacerUpdate
   )
+
+  // val DL = new DLCounterEntry()
+  val binCounterArray_init = 0.U.asTypeOf(Vec(8, new DLCounterEntry()))
+  val binCounterArray = WireInit(binCounterArray_init)
 
   def addrConnect(lset: UInt, ltag: UInt, rset: UInt, rtag: UInt) = {
     assert(lset.getWidth + ltag.getWidth == rset.getWidth + rtag.getWidth)
@@ -277,6 +342,10 @@ class Directory(implicit p: Parameters)
   resp.bits.self.error := selfResp.bits.error
   resp.bits.self.clientStates := selfResp.bits.dir.clientStates
   resp.bits.self.prefetch.foreach(p => p := selfResp.bits.dir.prefetch.get)
+  resp.bits.self.replAge := selfResp.bits.dir.replAge
+  resp.bits.self.binNumber := selfResp.bits.dir.binNumber
+  resp.bits.self.meta_allways := selfResp.bits.meta_allways.getOrElse(0.U.asTypeOf(resp.bits.self.meta_allways))
+  resp.bits.self.oldAge := selfResp.bits.dir.replAge
   resp.bits.clients.way := clientResp.bits.way
   resp.bits.clients.tag := clientResp.bits.tag
   resp.bits.clients.error := Cat(resp.bits.clients.states.map(_.hit)).orR() && clientResp.bits.error
@@ -287,6 +356,11 @@ class Directory(implicit p: Parameters)
       s.alias.foreach(_ := dir.alias.get)
   }
   resp.bits.clients.tag_match := clientResp.bits.hit
+
+  val binNumber = req.bits.tripCount * 4.U + req.bits.useCount
+  resp.bits.binCounter.L := binCounterArray(binNumber).L
+  resp.bits.binCounter.D_L := binCounterArray(binNumber).L
+  resp.bits.binCounter.L_sum := binCounterArray(1).L +  binCounterArray(2).L + binCounterArray(3).L
 
   // Self Tag Write
   selfDir.io.tag_w.valid := io.tagWReq.valid
@@ -306,13 +380,50 @@ class Directory(implicit p: Parameters)
   selfDir.io.dir_w.bits.set := io.dirWReq.bits.set
   selfDir.io.dir_w.bits.way := io.dirWReq.bits.way
   selfDir.io.dir_w.bits.dir := io.dirWReq.bits.data
+  // for L3-replacement
+  val new_meta_allways = RegInit(io.dirWReq.bits.meta_allways)
+  // val tagWReq_valid_hold = RegInit(false.B)
+  // when(io.tagWReq.valid) { tagWReq_valid_hold := tagWReq_valid_hold | true.B }
+  new_meta_allways.zipWithIndex.foreach {
+    case(m, i) =>
+      when(i.U =/= io.dirWReq.bits.way) {
+        // other ways in the same set as the chosen way
+        when(io.tagWReq.valid) {
+          // the chosen way will be replaced
+          m.replAge := Mux(
+            m.replAge >= io.dirWReq.bits.oldAge,
+            m.replAge - io.dirWReq.bits.oldAge,
+            0.U
+          )
+        }
+      }.otherwise {
+        // the chosen way
+        m.replAge := io.dirWReq.bits.data.replAge
+      }
+  }
+  selfDir.io.dir_w.bits.meta_allways.zipWithIndex.foreach {
+    // final correct meta-allways
+    case(m, i) =>
+      m := Mux(
+        i.U === io.dirWReq.bits.way,
+        io.dirWReq.bits.data,
+        io.dirWReq.bits.meta_allways(i)
+      )
+  }
   io.dirWReq.ready := selfDir.io.dir_w.ready && readyMask
   // Clients Dir Write
   clientDir.io.dir_w.valid := io.clientDirWReq.valid
   clientDir.io.dir_w.bits.set := io.clientDirWReq.bits.set
   clientDir.io.dir_w.bits.way := io.clientDirWReq.bits.way
   clientDir.io.dir_w.bits.dir := io.clientDirWReq.bits.data
+  clientDir.io.dir_w.bits.meta_allways := 0.U.asTypeOf(clientDir.io.dir_w.bits.meta_allways)  // DontCare
   io.clientDirWReq.ready := clientDir.io.dir_w.ready && readyMask
+
+  // Bin Counter Write
+  when(io.binWReq.valid){
+    binCounterArray(io.binWReq.bits.binNumber) := io.binWReq.bits.DLCounter
+  }
+  io.binWReq.ready := selfDir.io.tag_w.ready && readyMask
 
   assert(dirReadPorts == 1)
   val req_r = RegEnable(req.bits, req.fire())

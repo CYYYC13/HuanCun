@@ -47,6 +47,7 @@ class MSHRAlloc(implicit p: Parameters) extends HuanCunModule {
     val status = Vec(mshrsAll, Flipped(ValidIO(new MSHRStatus)))
     // To MSHRs
     val alloc = Vec(mshrsAll, ValidIO(new MSHRRequest))
+    val allocSampleSets = Vec(mshrsAll, ValidIO(Bool()))
     // To directory
     val dirRead = DecoupledIO(new DirRead)
     val bc_mask = ValidIO(Vec(mshrsAll, Bool()))
@@ -103,6 +104,11 @@ class MSHRAlloc(implicit p: Parameters) extends HuanCunModule {
   val bc_mshr_alloc = io.alloc.init.last
   val c_mshr_alloc = io.alloc.last
 
+  // tell MSHR whether the requested set is sample set or not
+  val abc_mshr_allocSampleSets = io.allocSampleSets.init.init
+  val bc_mshr_allocSampleSets = io.allocSampleSets.init.last
+  val c_mshr_allocSampleSets = io.allocSampleSets.last
+
   val nestC = may_nestC && !c_mshr_status.valid
   val nestB = may_nestB && !bc_mshr_status.valid && !c_mshr_status.valid
 
@@ -144,6 +150,21 @@ class MSHRAlloc(implicit p: Parameters) extends HuanCunModule {
     mshr.bits := request.bits
   }
 
+  for ((mshrSampleSets, i) <- abc_mshr_allocSampleSets.zipWithIndex) {
+    mshrSampleSets.valid := (
+      mshrFree && dirRead.ready && (
+        io.c_req.valid && !conflict_c ||
+        io.b_req.valid && !conflict_b && !io.c_req.valid ||
+        io.a_req.valid && !conflict_a && !io.b_req.valid && !io.c_req.valid
+      )
+    ) && selectedMSHROH(i)
+    mshrSampleSets.bits := Mux(
+      (request.bits.set(6,4) & request.bits.set(2,0)) === 0.U, // for tltest
+      // (request.bits.set(11,6) & request.bits.set(5,0)) === 0.U,
+      true.B,
+      false.B)
+  }
+
   val nestB_valid = io.b_req.valid && nestB && !io.c_req.valid
   val tmpB_valid = io.b_req.valid && !mshrFree && !conflict_b && !bc_mshr_status.valid && !io.c_req.valid
   val nestC_valid = io.c_req.valid && nestC
@@ -153,6 +174,19 @@ class MSHRAlloc(implicit p: Parameters) extends HuanCunModule {
   bc_mshr_alloc.bits := io.b_req.bits
   c_mshr_alloc.valid := (nestC_valid || tmpC_valid) && dirRead.ready
   c_mshr_alloc.bits := io.c_req.bits
+
+  bc_mshr_allocSampleSets.valid := (nestB_valid || tmpB_valid) && dirRead.ready
+  bc_mshr_allocSampleSets.bits := Mux(
+    (io.b_req.bits.set(6,4) & request.bits.set(2,0)) === 0.U, // for tltest
+    // (io.b_req.bits.set(11,6) & request.bits.set(5,0)) === 0.U,
+    true.B,
+    false.B)
+  c_mshr_allocSampleSets.valid := (nestC_valid || tmpC_valid) && dirRead.ready
+  c_mshr_allocSampleSets.bits := Mux(
+    (io.c_req.bits.set(6,4) & request.bits.set(2,0)) === 0.U, // for tltest
+    // (io.c_req.bits.set(11,6) & request.bits.set(5,0)) === 0.U,
+    true.B,
+    false.B)
 
   io.bc_mask.valid := bc_mshr_alloc.valid
   io.bc_mask.bits := b_match_vec
@@ -173,6 +207,8 @@ class MSHRAlloc(implicit p: Parameters) extends HuanCunModule {
   dirRead.bits.replacerInfo.reqSource := request.bits.reqSource
   dirRead.bits.wayMode := false.B
   dirRead.bits.way := DontCare
+  dirRead.bits.tripCount := request.bits.tripCount
+  dirRead.bits.useCount := request.bits.useCount
 
   val cntStart = RegInit(false.B)
   when(dirRead.ready) {

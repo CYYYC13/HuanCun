@@ -25,14 +25,16 @@ import chisel3.util._
 import chisel3.util.random.LFSR
 import freechips.rocketchip.tilelink.TLMessages
 import freechips.rocketchip.util.{Pow2ClockDivider, ReplacementPolicy}
+import huancun.noninclusive.SelfDirEntry
 import huancun.utils._
-import utility.{Code}
+import utility.Code
 
 trait BaseDirResult extends HuanCunBundle {
   val idOH = UInt(mshrsAll.W) // which mshr the result should be sent to
 }
 trait BaseDirWrite extends HuanCunBundle
 trait BaseTagWrite extends HuanCunBundle
+// trait BaseBinCounterWrite extends HuanCunBundle
 
 class DirRead(implicit p: Parameters) extends HuanCunBundle {
   val idOH = UInt(mshrsAll.W)
@@ -42,6 +44,8 @@ class DirRead(implicit p: Parameters) extends HuanCunBundle {
   val source = UInt(sourceIdBits.W)
   val wayMode = Bool()
   val way = UInt(log2Ceil(maxWays).W)
+  val tripCount = UInt(1.W)
+  val useCount = UInt(2.W)
 }
 
 abstract class BaseDirectoryIO[T_RESULT <: BaseDirResult, T_DIR_W <: BaseDirWrite, T_TAG_W <: BaseTagWrite](
@@ -67,6 +71,7 @@ class SubDirectory[T <: Data](
   dir_init_fn: () => T,
   dir_hit_fn: T => Bool,
   invalid_way_sel: (Seq[T], UInt) => (Bool, UInt),
+  meta_allways_flag: Boolean = false,    // only selfDir needs allways-meta
   replacement: String)(implicit p: Parameters)
     extends MultiIOModule {
 
@@ -87,6 +92,8 @@ class SubDirectory[T <: Data](
       val way = UInt(wayBits.W)
       val tag = UInt(tagBits.W)
       val dir = dir_init.cloneType
+      // for L3-replacement
+      val meta_allways = if(meta_allways_flag == true) Some(Vec(ways, dir_init.cloneType)) else None
       val error = Bool()
     })
     val tag_w = Flipped(DecoupledIO(new Bundle() {
@@ -98,6 +105,7 @@ class SubDirectory[T <: Data](
       val set = UInt(setBits.W)
       val way = UInt(wayBits.W)
       val dir = dir_init.cloneType
+      val meta_allways = Vec(ways, dir_init.cloneType)
     }))
   })
 
@@ -193,8 +201,17 @@ class SubDirectory[T <: Data](
   val hitWay = OHToUInt(hitVec)
   val replaceWay = repl.get_replace_way(repl_state)
   val (inv, invalidWay) = invalid_way_sel(metas, replaceWay)
-  val chosenWay = Mux(inv, invalidWay, replaceWay)
+  val chosenWay = Wire(UInt(wayBits.W))
+  if(meta_allways_flag) {
+    chosenWay := invalidWay // selfDir
+  } else {
+    chosenWay := Mux(inv, invalidWay, replaceWay) // clientDir
+  }
 
+  // val chosenWay = Mux(meta_allways_flag,
+  //                   invalidWay, //selfDir
+  //                   Mux(inv, invalidWay, replaceWay)  // clientDir
+  //
   /* stage 0: io.read.fire
      stage #: wait for sram
      stage 1: generate hit/way, io.resp.valid = TRUE (will latch into MSHR)
@@ -219,13 +236,30 @@ class SubDirectory[T <: Data](
   io.resp.bits.dir := meta_s2
   io.resp.bits.tag := tag_s2
   io.resp.bits.error := io.resp.bits.hit && error_s2
+  if(meta_allways_flag) {
+    io.resp.bits.meta_allways.foreach(_ := metaAll_s2)   // selfDir
+  }
 
-  metaArray.io.w(
-    !resetFinish || dir_wen,
-    Mux(resetFinish, io.dir_w.bits.dir, dir_init),
-    Mux(resetFinish, io.dir_w.bits.set, resetIdx),
-    Mux(resetFinish, UIntToOH(io.dir_w.bits.way), Fill(ways, true.B))
-  )
+  if(meta_allways_flag) {
+    // selfDir
+    // println(io.dir_w.bits.meta_allways.getClass.getSimpleName)
+    metaArray.io.w(
+      !resetFinish || dir_wen,
+      Mux(resetFinish, io.dir_w.bits.meta_allways, 0.U.asTypeOf(io.dir_w.bits.meta_allways)),
+      Mux(resetFinish, io.dir_w.bits.set, resetIdx),
+      Fill(ways, true.B)
+    )
+  } else {
+    // clientDir
+    // println(dir_init.getClass.getSimpleName)
+    metaArray.io.w(
+      !resetFinish || dir_wen,
+      Mux(resetFinish, io.dir_w.bits.dir, dir_init),
+      Mux(resetFinish, io.dir_w.bits.set, resetIdx),
+      Mux(resetFinish, UIntToOH(io.dir_w.bits.way), Fill(ways, true.B))
+    )
+  }
+
 
   val cycleCnt = Counter(true.B, 2)
   val resetMask = if (clk_div_by_2) cycleCnt._1(0) else true.B
@@ -262,10 +296,11 @@ abstract class SubDirectoryDoUpdate[T <: Data](
   dir_init_fn: () => T,
   dir_hit_fn:  T => Bool,
   invalid_way_sel: (Seq[T], UInt) => (Bool, UInt),
+  meta_allways_flag: Boolean = false,
   replacement: String)(implicit p: Parameters)
     extends SubDirectory[T](
       wports, sets, ways, tagBits,
-      dir_init_fn, dir_hit_fn, invalid_way_sel,
+      dir_init_fn, dir_hit_fn, invalid_way_sel,meta_allways_flag,
       replacement
     ) with HasUpdate {
 

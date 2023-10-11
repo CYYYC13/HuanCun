@@ -74,6 +74,10 @@ class SinkC(implicit p: Parameters) extends BaseSinkC {
   io.alloc.bits.preferCache := true.B
   io.alloc.bits.hitLevelL3toL2 := 0.U
   io.alloc.bits.dirty := c.bits.echo.lift(DirtyKey).getOrElse(true.B)
+  // for L3-replacement
+  io.alloc.bits.tripCount := c.bits.echo.lift(TripCountKey).getOrElse(0.U)
+  io.alloc.bits.useCount := c.bits.echo.lift(UseCountKey).getOrElse(0.U)
+
   io.alloc.bits.fromProbeHelper := false.B
   io.alloc.bits.fromCmoHelper := false.B
   io.alloc.bits.needProbeAckData.foreach(_ := false.B)

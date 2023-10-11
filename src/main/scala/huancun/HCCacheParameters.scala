@@ -90,6 +90,38 @@ case class DirtyField() extends BundleField(DirtyKey) {
   }
 }
 
+// for L3-replacement
+  // tripCount: how many times a block travels from L2 to L3
+  // use 1 bit to show times
+  // 0: tripCount == 0
+  // 1: tripCount >= 1
+case object TripCountKey extends ControlKey[UInt](name = "tripCount")
+
+case class TripCountField() extends BundleField(TripCountKey) {
+  override def data: UInt = Output(UInt(1.W))
+
+  override def default(x: UInt): Unit = {
+    x := 0.U(1.W)
+  }
+}
+
+// for L3-replacement
+  // useCount: how many times a block is hit(just demand request) in L2
+  // use 4 bits to show times
+  // 0: useCount == 0
+  // 1: useCount == 1
+  // 2: useCount == 2
+  // 3: useCount >= 3
+case object UseCountKey extends ControlKey[UInt](name = "UseCount")
+
+case class UseCountField() extends BundleField(UseCountKey) {
+  override def data: UInt = Output(UInt(2.W))
+
+  override def default(x: UInt): Unit = {
+    x := 0.U(2.W)
+  }
+}
+
 // indicate where this granted-block is from(only used in handle Grant/GrantData)
 // now it only works for non-inclusive cache (ignored in inclusive cache) 
   // 0：isHitinMem or default 

@@ -48,6 +48,8 @@ class ProbeHelper(entries: Int = 5, enqDelay: Int = 1)(implicit p: Parameters)
   req.preferCache := true.B
   req.dirty := false.B // ignored
   req.hitLevelL3toL2 := 0.U // ignored
+  req.useCount := 0.U // ignored
+  req.tripCount := 0.U // ignored
   req.needProbeAckData.foreach(_ := false.B)
   req.fromCmoHelper := false.B
   req.reqSource := MemReqSource.NoWhere.id.U

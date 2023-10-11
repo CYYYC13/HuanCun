@@ -91,9 +91,10 @@ class Slice()(implicit p: Parameters) extends HuanCunModule {
 
   // MSHRs
   val ms = Seq.fill(mshrsAll) {
-    if (cacheParams.inclusive)
-      Module(new inclusive.MSHR())
-    else Module(new noninclusive.MSHR())
+    //if (cacheParams.inclusive)
+     // Module(new inclusive.MSHR())
+    //else
+    Module(new noninclusive.MSHR())
   }
   require(mshrsAll == mshrs + 2)
   val ms_abc = ms.init.init
@@ -167,6 +168,7 @@ class Slice()(implicit p: Parameters) extends HuanCunModule {
     case (mshr, i) =>
       mshr.io.id := i.U
       mshr.io.alloc := mshrAlloc.io.alloc(i)
+      mshr.io.allocSampleSets := mshrAlloc.io.allocSampleSets(i)
       mshrAlloc.io.status(i) := mshr.io.status
   }
   val c_mshr = ms.last
@@ -221,7 +223,7 @@ class Slice()(implicit p: Parameters) extends HuanCunModule {
         bc_mshr.io.status.valid && non_inclusive(bc_mshr).io_probeHelperFinish
       mshr.io_releaseThrough := false.B
       mshr.io_probeAckDataThrough := false.B
-    case _: inclusive.MSHR =>
+    // case _: inclusive.MSHR =>
   }
 
   bc_mshr match {
@@ -236,7 +238,7 @@ class Slice()(implicit p: Parameters) extends HuanCunModule {
       mshr.io_b_status.way := 0.U
       mshr.io_b_status.nestedProbeAckData := false.B
       mshr.io_b_status.probeHelperFinish := false.B
-    case _: inclusive.MSHR =>
+    // case _: inclusive.MSHR =>
   }
 
   c_mshr match
@@ -251,7 +253,7 @@ class Slice()(implicit p: Parameters) extends HuanCunModule {
       mshr.io_b_status.way := 0.U
       mshr.io_b_status.nestedProbeAckData := false.B
       mshr.io_b_status.probeHelperFinish := false.B
-    case _: inclusive.MSHR =>
+    // case _: inclusive.MSHR =>
   }
 
   val nestedWb = Wire(new NestedWriteback)
@@ -260,20 +262,20 @@ class Slice()(implicit p: Parameters) extends HuanCunModule {
   nestedWb.tag := Mux(select_c, c_mshr.io.status.bits.tag, bc_mshr.io.status.bits.tag)
 
   val bc_wb_state = bc_mshr match {
-    case mshr: inclusive.MSHR =>
-      mshr.io.tasks.dir_write.bits.data.state
+    // case mshr: inclusive.MSHR =>
+    //  mshr.io.tasks.dir_write.bits.data.state
     case mshr: noninclusive.MSHR =>
       mshr.io.tasks.dir_write.bits.data.state
   }
   val bc_wb_dirty = bc_mshr match {
-    case mshr: inclusive.MSHR =>
-      mshr.io.tasks.dir_write.bits.data.dirty
+    //case mshr: inclusive.MSHR =>
+    //  mshr.io.tasks.dir_write.bits.data.dirty
     case mshr: noninclusive.MSHR =>
       mshr.io.tasks.dir_write.bits.data.dirty
   }
   val c_wb_dirty = c_mshr match {
-    case mshr: inclusive.MSHR =>
-      mshr.io.tasks.dir_write.bits.data.dirty
+    //case mshr: inclusive.MSHR =>
+    //  mshr.io.tasks.dir_write.bits.data.dirty
     case mshr: noninclusive.MSHR =>
       mshr.io.tasks.dir_write.bits.data.dirty
   }
@@ -293,12 +295,12 @@ class Slice()(implicit p: Parameters) extends HuanCunModule {
     c_mshr.io.tasks.dir_write.valid &&
     c_wb_dirty
   val nestedWb_c_set_hit = c_mshr match {
-    case c: inclusive.MSHR =>
-      ms.map {
-        m =>
-          select_c && c.io.tasks.tag_write.valid &&
-            c.io.tasks.tag_write.bits.tag === m.io.status.bits.tag
-      }
+//    case c: inclusive.MSHR =>
+//      ms.map {
+//        m =>
+//          select_c && c.io.tasks.tag_write.valid &&
+//            c.io.tasks.tag_write.bits.tag === m.io.status.bits.tag
+//      }
     case c: noninclusive.MSHR =>
       ms.map {
         m =>
@@ -327,7 +329,7 @@ class Slice()(implicit p: Parameters) extends HuanCunModule {
               bc_mshr.io.tasks.client_dir_write.bits.data(i).state === MetaData.BRANCH
           )
       }
-    case (bc_mshr: inclusive.MSHR, c_mshr: inclusive.MSHR) =>
+    //case (bc_mshr: inclusive.MSHR, c_mshr: inclusive.MSHR) =>
     // skip
     case _ =>
       assert(false)
@@ -367,12 +369,13 @@ class Slice()(implicit p: Parameters) extends HuanCunModule {
       mshr.io_releaseThrough := Cat(
         (abc_mshr :+ bc_mshr).map(non_inclusive).map(_.io_c_status.releaseThrough)
       ).orR()
-    case _: inclusive.MSHR =>
+    // case _: inclusive.MSHR =>
   }
 
   val directory = Module({
-    if (cacheParams.inclusive) new inclusive.Directory()
-    else new noninclusive.Directory()
+    //if (cacheParams.inclusive) new inclusive.Directory()
+    //else
+      new noninclusive.Directory()
   })
   directory.io.read <> ctrl_arb(mshrAlloc.io.dirRead, ctrl.map(_.io.dir_read))
   ctrl.map(c => {
@@ -432,6 +435,13 @@ class Slice()(implicit p: Parameters) extends HuanCunModule {
     add_ctrl(ms.map(_.io.tasks.tag_write), ctrl.map(_.io.s_tag_w)),
     Some("tagWrite")
   )
+
+  arbTasks(
+    Pipeline.pipeTo(directory.io.binWReq),
+    add_ctrl(ms.map(_.io.tasks.bin_counter_write), ctrl.map(_.io.bin_w)),
+    Some("binCounterWrite")
+  )
+
   (directory, ms) match {
     case (dir: noninclusive.Directory, ms: Seq[noninclusive.MSHR]) =>
       block_b_c(
@@ -448,7 +458,7 @@ class Slice()(implicit p: Parameters) extends HuanCunModule {
           ctrl.map(_.io.c_tag_w)
         )
       )
-    case (_: inclusive.Directory, _: Seq[inclusive.MSHR]) =>
+    // case (_: inclusive.Directory, _: Seq[inclusive.MSHR]) =>
     // skip
     case _ =>
       assert(false)

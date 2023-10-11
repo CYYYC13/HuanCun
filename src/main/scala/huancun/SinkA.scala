@@ -114,6 +114,8 @@ class SinkA(implicit p: Parameters) extends HuanCunModule {
   allocInfo.fromCmoHelper := false.B
   allocInfo.needProbeAckData.foreach(_ := false.B)
   allocInfo.reqSource := a.bits.user.lift(utility.ReqSourceKey).getOrElse(MemReqSource.NoWhere.id.U)
+  allocInfo.tripCount := 0.U // ignored
+  allocInfo.useCount := 0.U // ignored
 
   io.d_pb_pop.ready := beatVals(io.d_pb_pop.bits.bufIdx)(io.d_pb_pop.bits.count)
   io.d_pb_beat := RegEnable(putBuffer(io.d_pb_pop.bits.bufIdx)(io.d_pb_pop.bits.count), io.d_pb_pop.fire())

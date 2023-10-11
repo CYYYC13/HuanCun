@@ -1,7 +1,7 @@
 package huancun.noninclusive
 
 import chipsalliance.rocketchip.config.Parameters
-import chisel3._
+import chisel3.{Mux, _}
 import chisel3.util._
 import freechips.rocketchip.tilelink.TLMessages._
 import freechips.rocketchip.tilelink.TLPermissions._
@@ -36,6 +36,7 @@ class MSHR()(implicit p: Parameters) extends BaseMSHR[DirResult, SelfDirWrite, S
       override val tag_write: DecoupledIO[SelfTagWrite] = DecoupledIO(new SelfTagWrite())
       val client_dir_write = DecoupledIO(new ClientDirWrite())
       val client_tag_write = DecoupledIO(new ClientTagWrite())
+      val bin_counter_write = DecoupledIO(new BinCounterWrite())
     }
     override val dirResult = Flipped(ValidIO(new DirResult()))
   })
@@ -50,6 +51,9 @@ class MSHR()(implicit p: Parameters) extends BaseMSHR[DirResult, SelfDirWrite, S
 
   val req = Reg(new MSHRRequest)
   val req_valid = RegInit(false.B)
+  val isSampleSets = Reg(Bool())
+  val isSampleSets_valid = RegInit(false.B)
+  val binNumber = req.tripCount * 4.U + req.useCount
   val iam = Reg(UInt((log2Up(clientBits)+1).W)) // Which client does this req come from?
   val meta_reg = Reg(new DirResult)
   val clients_meta_reg = WireInit(0.U.asTypeOf(io.dirResult.bits.clients.states))
@@ -70,13 +74,16 @@ class MSHR()(implicit p: Parameters) extends BaseMSHR[DirResult, SelfDirWrite, S
   meta := Mux(io.dirResult.valid, io.dirResult.bits, meta_reg)
   val self_meta = meta.self
   val clients_meta = meta.clients.states
+  val binCounter = meta.binCounter
   clients_meta_reg := meta_reg.clients.states
   dontTouch(self_meta)
   dontTouch(clients_meta)
+  dontTouch(binCounter)
 
   // Final meta to be written
   val new_self_meta = WireInit(self_meta)
   val new_clients_meta = WireInit(clients_meta)
+  val new_binCounter = WireInit(binCounter)
   val req_acquire = req.opcode === AcquireBlock || req.opcode === AcquirePerm
   val req_put = req.opcode(2,1) === 0.U
   val req_needT = needT(req.opcode, req.param)
@@ -224,6 +231,30 @@ class MSHR()(implicit p: Parameters) extends BaseMSHR[DirResult, SelfDirWrite, S
     state === BRANCH && perm === toB
   }
 
+  // judge whether onA_req will set_probe
+  def onA_req_setProbe(): Bool = {
+    val result = Wire(Bool())
+    clients_meta.zipWithIndex.foreach {
+      case (meta, i) =>
+        when(
+          // Acquire / Hint
+          (req.opcode =/= Get && !req_put &&
+            (i.U =/= iam && meta.hit &&
+              (req_acquire && (req_needT || !self_meta.hit || isT(meta.state)) ||
+                req.opcode === Hint && prefetch_miss_need_probe
+                )) || (i.U =/= iam && cache_alias)
+            ) ||
+            // Get / Put
+            (!(req.opcode =/= Get && !req_put) && (meta.hit && (isT(meta.state) || !self_meta.hit || req_put)))
+        ) {
+          result := true.B
+        }.otherwise {
+          result := false.B
+        }
+    }
+    result
+  }
+
   def onXReq(): Unit = {
     new_self_meta.dirty := false.B
     new_self_meta.state := Mux(req.param === 1.U,
@@ -265,6 +296,37 @@ class MSHR()(implicit p: Parameters) extends BaseMSHR[DirResult, SelfDirWrite, S
           clients_meta_reg(i).state
         )
     }
+    // binNumber updates when:
+    // 1. it is a new block which will save in L3(will write selftag) on C request
+    // 2. and it's a sample set
+    // (only sample sets will save binNumber, non-sample sets have default value 0)
+    new_self_meta.binNumber := Mux(
+      will_save_release && !self_meta.hit && req.opcode(0) && isSampleSets_valid && isSampleSets,
+      binNumber,
+      self_meta.binNumber
+    )
+    // Age updates when:
+    // 1. replacement occurs in the same set(judge in directory)
+    // 2. or it is a new block which will save in L3(will write selftag)
+    new_self_meta.replAge := Mux(
+      will_save_release && !self_meta.hit && req.opcode(0),
+      Mux(
+        req.tripCount > 0.U,
+        3.U,
+        Mux(req.tripCount === 0.U &&
+            req.useCount > 0.U &&
+            binCounter.D_L > 3.U * binCounter.L &&
+            // L < 3/4 L_sum
+            (binCounter.L < (binCounter.L_sum - (binCounter.L_sum >> 2.U).asTypeOf(binCounter.L_sum))),
+          0.U,
+          1.U
+        )
+      ),
+      self_meta.replAge
+    )
+
+    new_self_meta.meta_allways := self_meta.meta_allways
+
     new_clients_meta.zipWithIndex.foreach {
       case (m, i) =>
         m.state := Mux(
@@ -273,6 +335,26 @@ class MSHR()(implicit p: Parameters) extends BaseMSHR[DirResult, SelfDirWrite, S
           clients_meta_reg(i).state
         )
     }
+
+    // D_L updates when:
+    // a block allocated to samplesets, D_L + 1
+    // a block in samplesets is hit, D_L - 2
+    new_binCounter.D_L := Mux(
+      !self_meta.hit,
+      binCounter.D_L + 1.U,
+      Mux(binCounter.D_L > 1.U,
+        binCounter.D_L - 2.U,
+        0.U
+      )
+    )
+
+    // L updates when:
+    // a block insamplesets is hit, L + 1
+    new_binCounter.L := Mux(self_meta.hit, binCounter.L + 1.U, binCounter.L)
+
+    // L_sum only updates in directory
+    new_binCounter.L_sum := binCounter.L_sum
+
   }
 
   def onBReq(): Unit = {
@@ -304,6 +386,13 @@ class MSHR()(implicit p: Parameters) extends BaseMSHR[DirResult, SelfDirWrite, S
         m.state := Mux(m.hit, shrink_next_state(client_probeack_param_vec(i)), clients_meta_reg(i).state)
     }
   }
+
+  val bypassPut = req_put && !self_meta.hit && !Cat(clients_meta.map(_.hit)).orR()
+  val bypassPut_latch = Keep(bypassPut)
+  val bypassPut_all = Mux(io.dirResult.valid, bypassPut, bypassPut_latch)
+  // Cache alias will always preferCache to avoid trifle
+  val preferCache = (req.preferCache && !bypassPut_all) || cache_alias
+  val bypassGet = req.opcode === Get && !preferCache
 
   def onAReq(): Unit = {
     // reqs: Acquire / Intent / Put / Get / Atomics
@@ -392,6 +481,43 @@ class MSHR()(implicit p: Parameters) extends BaseMSHR[DirResult, SelfDirWrite, S
           )
         }
     }
+
+    // binNumber updates when:
+    // 1. it is a new block which will save in L3(will write selftag) on A request
+    // 2. and it's a sample set
+    // (only sample sets will save binNumber, non-sample sets have default value 0)
+    new_self_meta.binNumber := Mux(
+      // onA_req need write selftag
+      ((!self_meta.hit && preferCache &&
+        (req.opcode === Get || req.opcode === AcquireBlock || prefetch_need_data)) ||
+      // onA_req need set_probe
+      onA_req_setProbe()) &&
+      isSampleSets_valid && isSampleSets,
+      binNumber,
+      self_meta.binNumber
+    )
+    // replAge updates when:
+    // 1. replacement occurs in the same set(judge in directory)
+    // 2. or it is a new block which will save in L3(will write selftag)
+    new_self_meta.replAge := Mux(
+      onA_req_setProbe(),
+      Mux(
+        req.tripCount > 0.U,
+        3.U,
+        Mux(req.tripCount === 0.U &&
+          req.useCount > 0.U &&
+          binCounter.D_L > 3.U * binCounter.L &&
+          // L < 3/4 L_sum
+          (binCounter.L < (binCounter.L_sum - (binCounter.L_sum >> 2.U).asTypeOf(binCounter.L_sum))),
+          0.U,
+          1.U
+        )
+      ),
+      self_meta.replAge
+    )
+
+    new_self_meta.meta_allways := self_meta.meta_allways
+
     new_clients_meta.zipWithIndex.foreach {
       case (m, i) =>
         val perm_after_probe = shrink_next_state(client_probeack_param_vec(i))
@@ -426,6 +552,25 @@ class MSHR()(implicit p: Parameters) extends BaseMSHR[DirResult, SelfDirWrite, S
           m.alias.foreach(_ := clients_meta_reg(i).alias.get)
         }
     }
+
+    // D_L updates when:
+    // a block allocated to samplesets, D_L + 1
+    // a block in samplesets is hit, D_L - 2
+    new_binCounter.D_L := Mux(
+      !self_meta.hit,
+      binCounter.D_L + 1.U,
+      Mux(binCounter.D_L > 1.U,
+        binCounter.D_L - 2.U,
+        0.U
+      )
+    )
+
+    // L updates when:
+    // a block insamplesets is hit, L + 1
+    new_binCounter.L := Mux(self_meta.hit, binCounter.L + 1.U, binCounter.L)
+
+    // L_sum only updates in directory
+    new_binCounter.L_sum := binCounter.L_sum
   }
 
   when(req.fromC) {
@@ -442,10 +587,16 @@ class MSHR()(implicit p: Parameters) extends BaseMSHR[DirResult, SelfDirWrite, S
 
   val new_clients_dir = Wire(Vec(clientBits, new ClientDirEntry))
   val new_self_dir = Wire(new SelfDirEntry)
+  val new_self_dir_allways = Wire(Vec(cacheParams.ways, new SelfDirEntry))
+  val new_self_dir_oldAge = Wire(UInt(2.W))
   new_self_dir.dirty := new_self_meta.dirty
   new_self_dir.state := new_self_meta.state
   new_self_dir.clientStates := new_self_meta.clientStates
   new_self_dir.prefetch.foreach(_ := self_meta.prefetch.get || prefetch_miss)
+  new_self_dir.replAge := new_self_meta.replAge
+  new_self_dir.binNumber := new_self_meta.binNumber
+  new_self_dir_allways := new_self_meta.meta_allways
+  new_self_dir_oldAge := new_self_meta.oldAge
   new_clients_dir.zip(new_clients_meta).foreach {
     case (dir, meta) =>
       dir.state := meta.state
@@ -535,6 +686,7 @@ class MSHR()(implicit p: Parameters) extends BaseMSHR[DirResult, SelfDirWrite, S
   val s_wbselftag = RegInit(true.B) // write self tag
   val s_wbclientsdir = RegInit(true.B) // write clients' dir
   val s_wbclientstag = RegInit(true.B) // write clients' tag
+  val s_wbbincounter = RegInit(true.B) // write bin counter
   val s_transferput = RegInit(true.B) // writeput to source_a
   val s_writerelease = RegInit(true.B) // sink_c
   val s_writeprobe = RegInit(true.B)
@@ -576,6 +728,7 @@ class MSHR()(implicit p: Parameters) extends BaseMSHR[DirResult, SelfDirWrite, S
     s_wbselftag := true.B
     s_wbclientsdir := true.B
     s_wbclientstag := true.B
+    s_wbbincounter := true.B
     s_transferput := true.B
     s_writerelease := true.B
     s_writeprobe := true.B
@@ -648,6 +801,13 @@ class MSHR()(implicit p: Parameters) extends BaseMSHR[DirResult, SelfDirWrite, S
       // When miss in self dir and has data, allocate a new block in self dir.
       when(!self_meta.hit && req.opcode(0)) {
         s_wbselftag := false.B
+        // when samplesets saved in L3 or hit in L3 will write bin counter
+        when(isSampleSets && isSampleSets_valid) {
+          s_wbbincounter := false.B
+        }
+      }
+      when(self_meta.hit) {
+        s_wbbincounter := false.B
       }
       when(self_meta.hit || req.opcode(0)) {
         s_wbselfdir := false.B
@@ -717,12 +877,7 @@ class MSHR()(implicit p: Parameters) extends BaseMSHR[DirResult, SelfDirWrite, S
     }
   }
 
-  val bypassPut = req_put && !self_meta.hit && !Cat(clients_meta.map(_.hit)).orR()
-  val bypassPut_latch = Keep(bypassPut)
-  val bypassPut_all = Mux(io.dirResult.valid, bypassPut, bypassPut_latch)
-  // Cache alias will always preferCache to avoid trifle
-  val preferCache = (req.preferCache && !bypassPut_all) || cache_alias
-  val bypassGet = req.opcode === Get && !preferCache
+
 
   def set_probe(): Unit = {
     a_do_probe := true.B
@@ -741,6 +896,9 @@ class MSHR()(implicit p: Parameters) extends BaseMSHR[DirResult, SelfDirWrite, S
     // A channel requests
     // TODO: consider parameterized write-through policy for put/atomics
     s_execute := req.opcode === Hint
+    when(self_meta.hit) {
+      s_wbbincounter := false.B
+    }
     when(!self_meta.hit && self_meta.state =/= INVALID && replace_need_release &&
       (
         (preferCache && (req.opcode === AcquireBlock || req.opcode === Get)) ||
@@ -791,11 +949,17 @@ class MSHR()(implicit p: Parameters) extends BaseMSHR[DirResult, SelfDirWrite, S
             ) {
               set_probe()
               s_wbclientsdir := false.B
+              when(isSampleSets && isSampleSets_valid) {
+                s_wbbincounter := false.B
+              }
             }
           }.otherwise {
             when(cache_alias) {
               set_probe()
               s_wbclientsdir := false.B
+              when(isSampleSets && isSampleSets_valid) {
+                s_wbbincounter := false.B
+              }
             }
           }
         }.otherwise {
@@ -806,6 +970,9 @@ class MSHR()(implicit p: Parameters) extends BaseMSHR[DirResult, SelfDirWrite, S
               s_wbselfdir := false.B
             }
             s_wbclientsdir := false.B
+            when(isSampleSets && isSampleSets_valid) {
+              s_wbbincounter := false.B
+            }
           }
         }
     }
@@ -826,6 +993,9 @@ class MSHR()(implicit p: Parameters) extends BaseMSHR[DirResult, SelfDirWrite, S
         (req.opcode === Get || req.opcode === AcquireBlock || prefetch_need_data)
     ) {
       s_wbselftag := false.B
+      when(isSampleSets && isSampleSets_valid) {
+        s_wbbincounter := false.B
+      }
     }
     // need to transfer exactly the request to sourceA when Put miss
     when(bypassPut) {
@@ -968,6 +1138,8 @@ class MSHR()(implicit p: Parameters) extends BaseMSHR[DirResult, SelfDirWrite, S
   io.tasks.tag_write.valid := io.enable && !s_wbselftag && no_wait && can_start
   io.tasks.client_dir_write.valid := io.enable && !s_wbclientsdir && no_wait && can_start
   io.tasks.client_tag_write.valid := io.enable && !s_wbclientstag && no_wait && can_start
+  // only sample sets will write bin counter
+  io.tasks.bin_counter_write.valid := io.enable && !s_wbbincounter && no_wait && can_start
   // io.tasks.sink_a.valid := !s_writeput && w_grant && s_writeprobe && w_probeacklast
   io.tasks.sink_a.valid := false.B
   io.tasks.sink_c.valid := io.enable && ((!s_writerelease && (!releaseSave || s_release)) || (!s_writeprobe))
@@ -1264,10 +1436,17 @@ class MSHR()(implicit p: Parameters) extends BaseMSHR[DirResult, SelfDirWrite, S
   io.tasks.dir_write.bits.set := req.set
   io.tasks.dir_write.bits.way := meta_reg.self.way
   io.tasks.dir_write.bits.data := new_self_dir
+  io.tasks.dir_write.bits.meta_allways := new_self_dir_allways
+  io.tasks.dir_write.bits.oldAge := new_self_dir_oldAge
 
   io.tasks.tag_write.bits.set := req.set
   io.tasks.tag_write.bits.way := meta_reg.self.way
   io.tasks.tag_write.bits.tag := req.tag
+
+  io.tasks.bin_counter_write.bits.binNumber := new_self_dir.binNumber
+  io.tasks.bin_counter_write.bits.DLCounter.D_L := new_binCounter.D_L
+  io.tasks.bin_counter_write.bits.DLCounter.L := new_binCounter.L
+  io.tasks.bin_counter_write.bits.DLCounter.L_sum := new_binCounter.L_sum
 
   val req_line_addr = Cat(req.tag, req.set)
   io.tasks.client_dir_write.bits.apply(
@@ -1322,6 +1501,9 @@ class MSHR()(implicit p: Parameters) extends BaseMSHR[DirResult, SelfDirWrite, S
   }
   when(io.tasks.client_tag_write.fire()){
     s_wbclientstag := true.B
+  }
+  when(io.tasks.bin_counter_write.fire()){
+    s_wbbincounter := true.B
   }
   when(io.tasks.sink_c.fire()) {
     when(!s_writeprobe) {
@@ -1450,7 +1632,7 @@ class MSHR()(implicit p: Parameters) extends BaseMSHR[DirResult, SelfDirWrite, S
 
   // Release MSHR
   val no_schedule = s_probeack && s_execute && s_grantack &&
-    RegNext(s_wbselfdir && s_wbselftag && s_wbclientsdir && s_wbclientstag && meta_valid, true.B) &&
+    RegNext(s_wbselfdir && s_wbselftag && s_wbclientsdir && s_wbclientstag && s_wbbincounter && meta_valid, true.B) &&
     s_writerelease && s_writeprobe &&
     s_triggerprefetch.getOrElse(true.B) &&
     s_prefetchack.getOrElse(true.B) &&
@@ -1503,6 +1685,10 @@ class MSHR()(implicit p: Parameters) extends BaseMSHR[DirResult, SelfDirWrite, S
     val clientBitOH = getClientBitOH(io.alloc.bits.source)
     // The highest bit of iam indicates that req comes from TL-UL node
     iam := Mux(clientBitOH === 0.U, Cat(1.U(1.W), 0.U(log2Up(clientBits).W)), OHToUInt(clientBitOH))
+  }
+  when(io.allocSampleSets.valid) {
+    isSampleSets_valid := true.B
+    isSampleSets := io.allocSampleSets.bits
   }
 
   // Latched control signals for timing

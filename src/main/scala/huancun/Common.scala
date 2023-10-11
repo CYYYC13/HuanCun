@@ -159,6 +159,8 @@ class MSHRRequest(implicit p: Parameters) extends HuanCunBundle with HasChannelB
   val needProbeAckData = if (cacheParams.inclusive) None else Some(Bool())
   val reqSource = UInt(MemReqSource.reqSourceBits.W)
   val hitLevelL3toL2 = UInt(2.W)
+  val tripCount = UInt(1.W)
+  val useCount = UInt(2.W)
   
 }
 
