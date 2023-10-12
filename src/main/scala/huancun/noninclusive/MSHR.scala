@@ -1,7 +1,7 @@
 package huancun.noninclusive
 
-import chipsalliance.rocketchip.config.Parameters
-import chisel3.{Mux, _}
+import org.chipsalliance.cde.config.Parameters
+import chisel3._
 import chisel3.util._
 import freechips.rocketchip.tilelink.TLMessages._
 import freechips.rocketchip.tilelink.TLPermissions._
@@ -30,14 +30,16 @@ class B_Status(implicit p: Parameters) extends HuanCunBundle {
 }
 
 class MSHR()(implicit p: Parameters) extends BaseMSHR[DirResult, SelfDirWrite, SelfTagWrite] with HasClientInfo {
-  val io = IO(new BaseMSHRIO[DirResult, SelfDirWrite, SelfTagWrite] {
-    override val tasks = new MSHRTasks[SelfDirWrite, SelfTagWrite] {
+  class MSHRTasksWithClient(implicit p: Parameters)
+    extends MSHRTasks[SelfDirWrite, SelfTagWrite] {
       override val dir_write: DecoupledIO[SelfDirWrite] = DecoupledIO(new SelfDirWrite())
       override val tag_write: DecoupledIO[SelfTagWrite] = DecoupledIO(new SelfTagWrite())
       val client_dir_write = DecoupledIO(new ClientDirWrite())
       val client_tag_write = DecoupledIO(new ClientTagWrite())
       val bin_counter_write = DecoupledIO(new BinCounterWrite())
     }
+  val io = IO(new BaseMSHRIO[DirResult, SelfDirWrite, SelfTagWrite] {
+    override val tasks = new MSHRTasksWithClient
     override val dirResult = Flipped(ValidIO(new DirResult()))
   })
 
@@ -92,7 +94,7 @@ class MSHR()(implicit p: Parameters) extends BaseMSHR[DirResult, SelfDirWrite, S
   val gotDirty = RegInit(false.B)
   val a_do_release = RegInit(false.B)
   val a_do_probe = RegInit(false.B)
-  val meta_no_clients = Cat(self_meta.clientStates.map(_ === INVALID)).andR()
+  val meta_no_clients = Cat(self_meta.clientStates.map(_ === INVALID)).andR
   val req_promoteT = req_acquire && Mux(
     self_meta.hit,
     meta_no_clients && self_meta.state === TIP,
@@ -867,7 +869,7 @@ class MSHR()(implicit p: Parameters) extends BaseMSHR[DirResult, SelfDirWrite, S
           )
         }
       }
-      when(Cat(clients_meta.map(_.hit)).orR()) {
+      when(Cat(clients_meta.map(_.hit)).orR) {
         s_probe := false.B
         s_wbclientsdir := false.B
         w_probeackfirst := false.B
@@ -1020,7 +1022,7 @@ class MSHR()(implicit p: Parameters) extends BaseMSHR[DirResult, SelfDirWrite, S
   }
 
   val self_ecc_err = meta_reg.self.hit && meta_reg.self.error
-  val client_ecc_err = Cat(meta_reg.clients.states.map(_.hit)).orR() && meta_reg.clients.error
+  val client_ecc_err = Cat(meta_reg.clients.states.map(_.hit)).orR && meta_reg.clients.error
   io.ecc.valid := meta_valid && (self_ecc_err || client_ecc_err)
   io.ecc.bits.addr := Cat(req.tag, req.set, req.off)
   io.ecc.bits.errCode := Mux(self_ecc_err, EccInfo.ERR_SELF_DIR, EccInfo.ERR_CLIENT_DIR)
@@ -1111,7 +1113,7 @@ class MSHR()(implicit p: Parameters) extends BaseMSHR[DirResult, SelfDirWrite, S
 
   val no_wait = w_probeacklast && w_grantlast && w_releaseack && w_grantack && w_putwritten && w_sinkcack
 
-  val clients_meta_busy = Cat(clients_meta.map(s => !s.hit && s.state =/= INVALID)).orR()
+  val clients_meta_busy = Cat(clients_meta.map(s => !s.hit && s.state =/= INVALID)).orR
   val client_dir_conflict = RegEnable(
     req.fromA && req_acquire && clients_meta_busy,
     io.dirResult.valid
@@ -1472,40 +1474,40 @@ class MSHR()(implicit p: Parameters) extends BaseMSHR[DirResult, SelfDirWrite, S
   }
 
   dontTouch(io.tasks)
-  when(io.tasks.source_a.fire()) {
+  when(io.tasks.source_a.fire) {
     s_acquire := true.B
     s_transferput := true.B
   }
-  when(io.tasks.source_b.fire()) {
+  when(io.tasks.source_b.fire) {
     s_probe := true.B
     assert(io.tasks.source_b.bits.clients =/= 0.U, "Invalid probe task\n")
   }
-  when(io.tasks.source_c.fire()) {
+  when(io.tasks.source_c.fire) {
     s_release := true.B
     s_probeack := true.B
   }
-  when(io.tasks.source_d.fire()) {
+  when(io.tasks.source_d.fire) {
     s_execute := true.B
   }
-  when(io.tasks.source_e.fire()) {
+  when(io.tasks.source_e.fire) {
     s_grantack := true.B
   }
-  when(io.tasks.dir_write.fire()) {
+  when(io.tasks.dir_write.fire) {
     s_wbselfdir := true.B
   }
-  when(io.tasks.tag_write.fire()) {
+  when(io.tasks.tag_write.fire) {
     s_wbselftag := true.B
   }
-  when(io.tasks.client_dir_write.fire()){
+  when(io.tasks.client_dir_write.fire){
     s_wbclientsdir := true.B
   }
-  when(io.tasks.client_tag_write.fire()){
+  when(io.tasks.client_tag_write.fire){
     s_wbclientstag := true.B
   }
-  when(io.tasks.bin_counter_write.fire()){
+  when(io.tasks.bin_counter_write.fire){
     s_wbbincounter := true.B
   }
-  when(io.tasks.sink_c.fire()) {
+  when(io.tasks.sink_c.fire) {
     when(!s_writeprobe) {
       s_writeprobe := true.B
     }.otherwise {
@@ -1513,10 +1515,10 @@ class MSHR()(implicit p: Parameters) extends BaseMSHR[DirResult, SelfDirWrite, S
     }
   }
   if (prefetchOpt.nonEmpty) {
-    when(io.tasks.prefetch_train.get.fire()) {
+    when(io.tasks.prefetch_train.get.fire) {
       s_triggerprefetch.get := true.B
     }
-    when(io.tasks.prefetch_resp.get.fire()) {
+    when(io.tasks.prefetch_resp.get.fire) {
       s_prefetchack.get := true.B
     }
   }
@@ -1660,7 +1662,7 @@ class MSHR()(implicit p: Parameters) extends BaseMSHR[DirResult, SelfDirWrite, S
       }.elsewhen(will_be_free){
         reg := 0.U
       }
-      (x.asUInt() | reg.asUInt()).asTypeOf(x)
+      (x.asUInt | reg.asUInt).asTypeOf(x)
     }
   }
 
@@ -1671,7 +1673,7 @@ class MSHR()(implicit p: Parameters) extends BaseMSHR[DirResult, SelfDirWrite, S
     }.elsewhen(will_be_free){
       reg := 0.U
     }
-    reg.asUInt().asTypeOf(x)
+    reg.asUInt.asTypeOf(x)
   }
 
   io.status.bits.will_free := will_be_free
