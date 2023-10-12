@@ -79,13 +79,7 @@ case class DirtyField() extends BundleField[Bool](DirtyKey, Output(Bool()), _ :=
   // 1: tripCount >= 1
 case object TripCountKey extends ControlKey[UInt](name = "tripCount")
 
-case class TripCountField() extends BundleField(TripCountKey) {
-  override def data: UInt = Output(UInt(1.W))
-
-  override def default(x: UInt): Unit = {
-    x := 0.U(1.W)
-  }
-}
+case class TripCountField() extends BundleField[UInt](TripCountKey, Output(UInt(1.W)), _ := 0.U(1.W))
 
 // for L3-replacement
   // useCount: how many times a block is hit(just demand request) in L2
@@ -96,13 +90,7 @@ case class TripCountField() extends BundleField(TripCountKey) {
   // 3: useCount >= 3
 case object UseCountKey extends ControlKey[UInt](name = "UseCount")
 
-case class UseCountField() extends BundleField(UseCountKey) {
-  override def data: UInt = Output(UInt(2.W))
-
-  override def default(x: UInt): Unit = {
-    x := 0.U(2.W)
-  }
-}
+case class UseCountField() extends BundleField[UInt](UseCountKey, Output(UInt(2.W)), _ := 0.U(2.W))
 
 // indicate where this granted-block is from(only used in handle Grant/GrantData)
 // now it only works for non-inclusive cache (ignored in inclusive cache) 
@@ -112,13 +100,7 @@ case class UseCountField() extends BundleField(UseCountKey) {
   // 3：isHitinCork
 case object HitLevelL3toL2Key extends ControlKey[UInt]("HitLevelL3toL2") 
 
-case class HitLevelL3toL2Field() extends BundleField(HitLevelL3toL2Key) {
-  override def data: UInt = Output(UInt(2.W))
-
-  override def default(x: UInt): Unit = {
-    x := 0.U(2.W)
-  }
-}
+case class HitLevelL3toL2Field() extends BundleField[UInt](HitLevelL3toL2Key, Output(UInt(2.W)), _ := 0.U(2.W))
 
 case class CacheCtrl
 (

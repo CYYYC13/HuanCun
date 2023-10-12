@@ -389,7 +389,7 @@ class MSHR()(implicit p: Parameters) extends BaseMSHR[DirResult, SelfDirWrite, S
     }
   }
 
-  val bypassPut = req_put && !self_meta.hit && !Cat(clients_meta.map(_.hit)).orR()
+  val bypassPut = req_put && !self_meta.hit && !Cat(clients_meta.map(_.hit)).orR
   val bypassPut_latch = Keep(bypassPut)
   val bypassPut_all = Mux(io.dirResult.valid, bypassPut, bypassPut_latch)
   // Cache alias will always preferCache to avoid trifle

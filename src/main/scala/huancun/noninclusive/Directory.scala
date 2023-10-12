@@ -251,7 +251,7 @@ class Directory(implicit p: Parameters)
   def self_invalid_way_sel(metaVec: Seq[SelfDirEntry], repl: UInt): (Bool, UInt) = {
     // 1.try to find a invalid way
     val invalid_vec = metaVec.map(_.state === MetaData.INVALID)
-    val has_invalid_way = Cat(invalid_vec).orR()
+    val has_invalid_way = Cat(invalid_vec).orR
     val invalid_way = ParallelPriorityMux(invalid_vec.zipWithIndex.map(x => x._1 -> x._2.U(wayBits.W)))
     // 2.if there is no invalid way, then try to find a way with minimum age
     // 3. if there are two or more ways with the same minimum age, chose the way with minimum way_id

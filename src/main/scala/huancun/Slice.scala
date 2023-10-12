@@ -368,7 +368,7 @@ class Slice()(implicit p: Parameters) extends HuanCunModule {
       mshr.io_probeAckDataThrough := false.B
       mshr.io_releaseThrough := Cat(
         (abc_mshr :+ bc_mshr).map(non_inclusive).map(_.io_c_status.releaseThrough)
-      ).orR()
+      ).orR
     // case _: inclusive.MSHR =>
   }
 
