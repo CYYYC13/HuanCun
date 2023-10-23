@@ -161,6 +161,8 @@ class SourceD(implicit p: Parameters) extends HuanCunModule {
   s2_d.bits.data := s1_queue.io.deq.bits.data
   s2_d.bits.corrupt := s2_d.bits.denied
   s2_d.bits.echo.lift(DirtyKey).foreach(_ := s2_req.dirty)
+  s2_d.bits.echo.lift(TripCountKey).foreach(_ := 0.U) //TODO
+  s2_d.bits.echo.lift(UseCountKey).foreach(_ := 0.U) //TODO
   s2_d.bits.user.lift(HitLevelL3toL2Key).foreach(_ := s2_req.hitLevelL3toL2)
   dontTouch(s2_d.bits.user)
 
@@ -225,9 +227,12 @@ class SourceD(implicit p: Parameters) extends HuanCunModule {
   s3_d.bits.corrupt := s3_req.denied ||
     (s3_req.opcode =/= TLMessages.AccessAck && s3_req.opcode =/= TLMessages.Grant && s3_queue.io.deq.bits.corrupt)
   s3_d.bits.echo.lift(DirtyKey).foreach(_ := s3_req.dirty)
+  s3_d.bits.echo.lift(TripCountKey).foreach(_ := 0.U) //TODO
+  s3_d.bits.echo.lift(UseCountKey).foreach(_ := 0.U) //TODO
   s3_d.bits.user.lift(HitLevelL3toL2Key).foreach(_ := s3_req.hitLevelL3toL2)
   dontTouch(s3_d.bits.user)
-
+  dontTouch(s3_d.bits.echo)
+  
   s3_queue.io.enq.valid := RegNextN(
     io.bs_raddr.fire,
     n = sramLatency,
