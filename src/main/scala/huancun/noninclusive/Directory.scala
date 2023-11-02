@@ -376,14 +376,35 @@ class Directory(implicit p: Parameters)
   io.clientTagWreq.ready := clientDir.io.tag_w.ready && readyMask
 
   // Self Dir Write
-  selfDir.io.dir_w.valid := io.dirWReq.valid
-  selfDir.io.dir_w.bits.set := io.dirWReq.bits.set
-  selfDir.io.dir_w.bits.way := io.dirWReq.bits.way
-  selfDir.io.dir_w.bits.dir := io.dirWReq.bits.data
+  // selfDir.io.dir_w.valid := io.dirWReq.valid
+  // selfDir.io.dir_w.bits.set := io.dirWReq.bits.set
+  // selfDir.io.dir_w.bits.way := io.dirWReq.bits.way
+  // selfDir.io.dir_w.bits.dir := io.dirWReq.bits.data
+  val selfDir_dirW_valid_reg = RegNext(io.dirWReq.valid)
+  val selfDir_dirW_set_reg = RegNext(io.dirWReq.bits.set)
+  val selfDir_dirW_way_reg = RegNext(io.dirWReq.bits.way)
+  val selfDir_dirW_dir_reg = RegNext(io.dirWReq.bits.data)
   // for L3-replacement
   val new_meta_allways = RegInit(io.dirWReq.bits.meta_allways)
-  // val tagWReq_valid_hold = RegInit(false.B)
+  // when(io.dirWReq.valid) {
+  //   new_meta_allways := io.dirWReq.bits.meta_allways
+  // }
+  when(io.dirWReq.valid) {  // delay selfDir_dirW for 1 cycle, waiting for new_meta_allways
+     new_meta_allways := io.dirWReq.bits.meta_allways
+    // selfDir_dirW_valid_reg := io.dirWReq.valid
+    // selfDir_dirW_set_reg := io.dirWReq.bits.set
+    // selfDir_dirW_way_reg := io.dirWReq.bits.way
+    // selfDir_dirW_dir_reg := io.dirWReq.bits.data
+  }
+  selfDir.io.dir_w.valid := selfDir_dirW_valid_reg
+  selfDir.io.dir_w.bits.set := selfDir_dirW_set_reg
+  selfDir.io.dir_w.bits.way := selfDir_dirW_way_reg
+  selfDir.io.dir_w.bits.dir := selfDir_dirW_dir_reg
+
+  //val tagWReq_valid_hold = RegInit(false.B)
+
   // when(io.tagWReq.valid) { tagWReq_valid_hold := tagWReq_valid_hold | true.B }
+  /*
   new_meta_allways.zipWithIndex.foreach {
     case(m, i) =>
       when(i.U =/= io.dirWReq.bits.way) {
@@ -401,13 +422,32 @@ class Directory(implicit p: Parameters)
         m.replAge := io.dirWReq.bits.data.replAge
       }
   }
+  */
+  when(io.tagWReq.valid) {
+    new_meta_allways.zipWithIndex.foreach {
+      case (m, i) =>
+        when(i.U =/= io.dirWReq.bits.way) {
+          m.replAge := Mux(
+            m.replAge >= io.dirWReq.bits.oldAge,
+            m.replAge - io.dirWReq.bits.oldAge,
+            0.U
+          ) 
+        }.otherwise {
+            m.replAge := io.dirWReq.bits.data.replAge
+          }
+
+    }
+  }
+  
+  dontTouch(new_meta_allways)
   selfDir.io.dir_w.bits.meta_allways.zipWithIndex.foreach {
     // final correct meta-allways
     case(m, i) =>
       m := Mux(
-        i.U === io.dirWReq.bits.way,
-        io.dirWReq.bits.data,
-        io.dirWReq.bits.meta_allways(i)
+        i.U === selfDir.io.dir_w.bits.way,
+        selfDir.io.dir_w.bits.dir,
+        //io.dirWReq.bits.meta_allways(i)
+        new_meta_allways(i)
       )
   }
   io.dirWReq.ready := selfDir.io.dir_w.ready && readyMask
