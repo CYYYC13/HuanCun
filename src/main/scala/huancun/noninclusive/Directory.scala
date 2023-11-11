@@ -40,12 +40,6 @@ class SelfDirEntry(implicit p: Parameters) extends HuanCunBundle {
   val state = UInt(stateBits.W)
   val clientStates = Vec(clientBits, UInt(stateBits.W))
   val prefetch = if (hasPrefetchBit) Some(Bool()) else None // whether the block is prefetched
-  // for L3-replacement
-  // bin number - (tripCount, useCount)
-  // 0-(0,0), 1-(0,1), 2-(0,2), 3-(0,3),
-  // 4-(1,0), 5-(1,1), 6-(1,2), 7-(1,3)
-  val binNumber = UInt(3.W)
-  val replAge = UInt(2.W)
 }
 
 class ClientDirEntry(implicit p: Parameters) extends HuanCunBundle {
@@ -59,8 +53,8 @@ class SelfDirResult(implicit p: Parameters) extends SelfDirEntry {
   val tag = UInt(tagBits.W)
   val error = Bool()
   // for L3-replacement
-  val meta_allways = Vec(cacheParams.ways, new SelfDirEntry())
-  val oldAge = UInt(2.W) // save old age to directory
+  val repl_msg = Vec(cacheParams.ways, new AgeEntry())
+  val oldAge = new AgeEntry // save old age to directory
 }
 
 class ClientDirResult(implicit p: Parameters) extends HuanCunBundle with HasClientInfo {
@@ -108,8 +102,7 @@ class SelfDirWrite(implicit p: Parameters) extends BaseDirWrite {
   val set = UInt(setBits.W)
   val way = UInt(wayBits.W)
   val data = new SelfDirEntry
-  val meta_allways = Vec(cacheParams.ways, new SelfDirEntry)
-  val oldAge = UInt(2.W)
+  // val oldAge = UInt(2.W)
 }
 
 class ClientDirWrite(implicit p: Parameters) extends HuanCunBundle with HasClientInfo {
@@ -129,6 +122,12 @@ class BinCounterWrite(implicit p: Parameters) extends HuanCunBundle {
   val DLCounter = new DLCounterEntry
 }
 
+class AgeWrite(implicit p: Parameters) extends HuanCunBundle {
+  val set = UInt(setBits.W)
+  val way = UInt(wayBits.W)
+  val repl_msg = Vec(cacheParams.ways, new AgeEntry)
+}
+
 trait NonInclusiveCacheReplacerUpdate { this: HasUpdate =>
   override def doUpdate(info: ReplacerInfo): Bool = {
     val release_update = info.channel(2) && info.opcode === TLMessages.ReleaseData
@@ -145,6 +144,7 @@ class DirectoryIO(implicit p: Parameters) extends BaseDirectoryIO[DirResult, Sel
   val clientDirWReq = Flipped(DecoupledIO(new ClientDirWrite))
   val clientTagWreq = Flipped(DecoupledIO(new ClientTagWrite))
   val binWReq = Flipped(DecoupledIO(new BinCounterWrite))
+  val ageWReq = Flipped(DecoupledIO(new AgeWrite))
 }
 
 class Directory(implicit p: Parameters)
@@ -206,6 +206,10 @@ class Directory(implicit p: Parameters)
     val way = ParallelPriorityMux(invalid_vec.zipWithIndex.map(x => x._1 -> x._2.U(clientWayBits.W)))
     (has_invalid_way, way)
   }
+  // empty function, just for clientDir module instantiation
+  def client_self_invalid_way_sel(metaVec: Seq[SelfDirAgeEntry], repl: UInt): (Bool, UInt) = {
+    (false.B, 0.U)
+  }
 
   val clientDir = Module(
     new SubDirectory[Vec[ClientDirEntry]](
@@ -220,8 +224,9 @@ class Directory(implicit p: Parameters)
         init
       },
       dir_hit_fn = dirs => Cat(dirs.map(_.state =/= MetaData.INVALID)).orR,
-      invalid_way_sel = client_invalid_way_fn,
-      meta_allways_flag = false,
+      client_invalidWay_sel = client_invalid_way_fn,
+      self_invalidWay_sel = client_self_invalid_way_sel,
+      SelfDir_flag = false,
       replacement = "random"
     )
   )
@@ -248,14 +253,14 @@ class Directory(implicit p: Parameters)
 
   // add L3-replacement
     // do not use repl, which is made by old replacement in SubDirectory
-  def self_invalid_way_sel(metaVec: Seq[SelfDirEntry], repl: UInt): (Bool, UInt) = {
+  def self_invalid_way_sel(metaVec: Seq[SelfDirAgeEntry], repl: UInt): (Bool, UInt) = {
     // 1.try to find a invalid way
-    val invalid_vec = metaVec.map(_.state === MetaData.INVALID)
+    val invalid_vec = metaVec.map(_.meta.state === MetaData.INVALID)
     val has_invalid_way = Cat(invalid_vec).orR
     val invalid_way = ParallelPriorityMux(invalid_vec.zipWithIndex.map(x => x._1 -> x._2.U(wayBits.W)))
     // 2.if there is no invalid way, then try to find a way with minimum age
     // 3. if there are two or more ways with the same minimum age, chose the way with minimum way_id
-    val age_vec = metaVec.map(_.replAge)
+    val age_vec = metaVec.map(_.age)
     val min_age = ParallelMin(age_vec)
     val min_age_way = WireInit(invalid_way)
     age_vec.zipWithIndex.reverse.foreach {
@@ -268,6 +273,10 @@ class Directory(implicit p: Parameters)
       has_invalid_way,
       Mux(has_invalid_way, invalid_way, min_age_way)
     )
+  }
+  // empty function, just for selfDir module instantiation
+  def self_client_invalid_way_sel(metaVec: Seq[SelfDirEntry], repl: UInt): (Bool, UInt) = {
+    (false.B, 0.U)
   }
 
 
@@ -285,8 +294,9 @@ class Directory(implicit p: Parameters)
         init
       },
       dir_hit_fn = selfHitFn,
-      self_invalid_way_sel,
-      meta_allways_flag = true,
+      self_invalidWay_sel = self_invalid_way_sel,
+      client_invalidWay_sel = self_client_invalid_way_sel,
+      SelfDir_flag = true,
       replacement = cacheParams.replacement
     ) with NonInclusiveCacheReplacerUpdate
   )
@@ -342,10 +352,8 @@ class Directory(implicit p: Parameters)
   resp.bits.self.error := selfResp.bits.error
   resp.bits.self.clientStates := selfResp.bits.dir.clientStates
   resp.bits.self.prefetch.foreach(p => p := selfResp.bits.dir.prefetch.get)
-  resp.bits.self.replAge := selfResp.bits.dir.replAge
-  resp.bits.self.binNumber := selfResp.bits.dir.binNumber
-  resp.bits.self.meta_allways := selfResp.bits.meta_allways.getOrElse(0.U.asTypeOf(resp.bits.self.meta_allways))
-  resp.bits.self.oldAge := selfResp.bits.dir.replAge
+  resp.bits.self.repl_msg := selfResp.bits.repl_msg.getOrElse(0.U.asTypeOf(resp.bits.self.repl_msg))
+  resp.bits.self.oldAge := selfResp.bits.old_age.getOrElse(0.U.asTypeOf(resp.bits.self.oldAge))
   resp.bits.clients.way := clientResp.bits.way
   resp.bits.clients.tag := clientResp.bits.tag
   resp.bits.clients.error := Cat(resp.bits.clients.states.map(_.hit)).orR && clientResp.bits.error
@@ -376,30 +384,30 @@ class Directory(implicit p: Parameters)
   io.clientTagWreq.ready := clientDir.io.tag_w.ready && readyMask
 
   // Self Dir Write
-  // selfDir.io.dir_w.valid := io.dirWReq.valid
-  // selfDir.io.dir_w.bits.set := io.dirWReq.bits.set
-  // selfDir.io.dir_w.bits.way := io.dirWReq.bits.way
-  // selfDir.io.dir_w.bits.dir := io.dirWReq.bits.data
-  val selfDir_dirW_valid_reg = RegNext(io.dirWReq.valid)
-  val selfDir_dirW_set_reg = RegNext(io.dirWReq.bits.set)
-  val selfDir_dirW_way_reg = RegNext(io.dirWReq.bits.way)
-  val selfDir_dirW_dir_reg = RegNext(io.dirWReq.bits.data)
+   selfDir.io.dir_w.valid := io.dirWReq.valid
+   selfDir.io.dir_w.bits.set := io.dirWReq.bits.set
+   selfDir.io.dir_w.bits.way := io.dirWReq.bits.way
+   selfDir.io.dir_w.bits.dir := io.dirWReq.bits.data
+//  val selfDir_dirW_valid_reg = RegNext(io.dirWReq.valid)
+//  val selfDir_dirW_set_reg = RegNext(io.dirWReq.bits.set)
+//  val selfDir_dirW_way_reg = RegNext(io.dirWReq.bits.way)
+//  val selfDir_dirW_dir_reg = RegNext(io.dirWReq.bits.data)
   // for L3-replacement
-  val new_meta_allways = RegInit(io.dirWReq.bits.meta_allways)
+//  val new_meta_allways = RegInit(io.dirWReq.bits.meta_allways)
   // when(io.dirWReq.valid) {
   //   new_meta_allways := io.dirWReq.bits.meta_allways
   // }
-  when(io.dirWReq.valid) {  // delay selfDir_dirW for 1 cycle, waiting for new_meta_allways
-     new_meta_allways := io.dirWReq.bits.meta_allways
-    // selfDir_dirW_valid_reg := io.dirWReq.valid
-    // selfDir_dirW_set_reg := io.dirWReq.bits.set
-    // selfDir_dirW_way_reg := io.dirWReq.bits.way
-    // selfDir_dirW_dir_reg := io.dirWReq.bits.data
-  }
-  selfDir.io.dir_w.valid := selfDir_dirW_valid_reg
-  selfDir.io.dir_w.bits.set := selfDir_dirW_set_reg
-  selfDir.io.dir_w.bits.way := selfDir_dirW_way_reg
-  selfDir.io.dir_w.bits.dir := selfDir_dirW_dir_reg
+//  when(io.dirWReq.valid) {  // delay selfDir_dirW for 1 cycle, waiting for new_meta_allways
+//     new_meta_allways := io.dirWReq.bits.meta_allways
+//    // selfDir_dirW_valid_reg := io.dirWReq.valid
+//    // selfDir_dirW_set_reg := io.dirWReq.bits.set
+//    // selfDir_dirW_way_reg := io.dirWReq.bits.way
+//    // selfDir_dirW_dir_reg := io.dirWReq.bits.data
+//  }
+//  selfDir.io.dir_w.valid := selfDir_dirW_valid_reg
+//  selfDir.io.dir_w.bits.set := selfDir_dirW_set_reg
+//  selfDir.io.dir_w.bits.way := selfDir_dirW_way_reg
+//  selfDir.io.dir_w.bits.dir := selfDir_dirW_dir_reg
 
   //val tagWReq_valid_hold = RegInit(false.B)
 
@@ -423,47 +431,61 @@ class Directory(implicit p: Parameters)
       }
   }
   */
-  when(io.tagWReq.valid) {
-    new_meta_allways.zipWithIndex.foreach {
-      case (m, i) =>
-        when(i.U =/= io.dirWReq.bits.way) {
-          m.replAge := Mux(
-            m.replAge >= io.dirWReq.bits.oldAge,
-            m.replAge - io.dirWReq.bits.oldAge,
-            0.U
-          ) 
-        }.otherwise {
-            m.replAge := io.dirWReq.bits.data.replAge
-          }
-
-    }
-  }
-  
-  dontTouch(new_meta_allways)
-  selfDir.io.dir_w.bits.meta_allways.zipWithIndex.foreach {
-    // final correct meta-allways
-    case(m, i) =>
-      m := Mux(
-        i.U === selfDir.io.dir_w.bits.way,
-        selfDir.io.dir_w.bits.dir,
-        //io.dirWReq.bits.meta_allways(i)
-        new_meta_allways(i)
-      )
-  }
+//  when(io.tagWReq.valid) {
+//    new_meta_allways.zipWithIndex.foreach {
+//      case (m, i) =>
+//        when(i.U =/= io.dirWReq.bits.way) {
+//          m.replAge := Mux(
+//            m.replAge >= io.dirWReq.bits.oldAge,
+//            m.replAge - io.dirWReq.bits.oldAge,
+//            0.U
+//          )
+//        }.otherwise {
+//            m.replAge := io.dirWReq.bits.data.replAge
+//          }
+//
+//    }
+//  }
+//
+//  dontTouch(new_meta_allways)
+//  selfDir.io.dir_w.bits.meta_allways.zipWithIndex.foreach {
+//    // final correct meta-allways
+//    case(m, i) =>
+//      m := Mux(
+//        i.U === selfDir.io.dir_w.bits.way,
+//        selfDir.io.dir_w.bits.dir,
+//        //io.dirWReq.bits.meta_allways(i)
+//        new_meta_allways(i)
+//      )
+//  }
   io.dirWReq.ready := selfDir.io.dir_w.ready && readyMask
+
+  // Self Age Write
+  selfDir.io.age_w.valid := io.ageWReq.valid
+  selfDir.io.age_w.bits.set := io.ageWReq.bits.set
+  selfDir.io.age_w.bits.way := io.ageWReq.bits.way
+  selfDir.io.age_w.bits.repl_msg := io.ageWReq.bits.repl_msg
+  io.ageWReq.ready := selfDir.io.age_w.ready && readyMask
+
   // Clients Dir Write
   clientDir.io.dir_w.valid := io.clientDirWReq.valid
   clientDir.io.dir_w.bits.set := io.clientDirWReq.bits.set
   clientDir.io.dir_w.bits.way := io.clientDirWReq.bits.way
   clientDir.io.dir_w.bits.dir := io.clientDirWReq.bits.data
-  clientDir.io.dir_w.bits.meta_allways := 0.U.asTypeOf(clientDir.io.dir_w.bits.meta_allways)  // DontCare
   io.clientDirWReq.ready := clientDir.io.dir_w.ready && readyMask
+
+  // dontcare Clients Dir's age_w port
+  clientDir.io.age_w.valid := false.B
+  clientDir.io.age_w.bits.set := 0.U
+  clientDir.io.age_w.bits.way := 0.U
+  clientDir.io.age_w.bits.repl_msg := 0.U.asTypeOf(clientDir.io.age_w.bits.repl_msg)
 
   // Bin Counter Write
   when(io.binWReq.valid){
     binCounterArray(io.binWReq.bits.binNumber) := io.binWReq.bits.DLCounter
   }
   io.binWReq.ready := selfDir.io.tag_w.ready && readyMask
+
 
   assert(dirReadPorts == 1)
   val req_r = RegEnable(req.bits, req.fire)

@@ -442,6 +442,12 @@ class Slice()(implicit p: Parameters) extends HuanCunModule {
     Some("binCounterWrite")
   )
 
+  arbTasks(
+    Pipeline.pipeTo(directory.io.ageWReq),
+    add_ctrl(ms.map(_.io.tasks.age_write), ctrl.map(_.io.age_w)),
+    Some("AgeWrite")
+  )
+
   (directory, ms) match {
     case (dir: noninclusive.Directory, ms: Seq[noninclusive.MSHR]) =>
       block_b_c(

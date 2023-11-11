@@ -16,6 +16,7 @@ class SliceCtrl()(implicit p: Parameters) extends HuanCunModule {
     val s_tag_w = DecoupledIO(new SelfTagWrite())
     val c_tag_w = DecoupledIO(new ClientTagWrite())
     val bin_w = DecoupledIO(new BinCounterWrite())
+    val age_w = DecoupledIO(new AgeWrite())
     val bs_w_addr = DecoupledIO(new DSAddress())
     val bs_w_data = Output(new DSData())
     val dir_read = DecoupledIO(new DirRead())
@@ -139,6 +140,7 @@ class SliceCtrl()(implicit p: Parameters) extends HuanCunModule {
   io.s_tag_w.valid := s_wb_self_tag
   io.c_tag_w.valid := s_wb_client_tag
   io.bin_w.valid := false.B
+  io.age_w.valid := false.B
 
   io.s_dir_w.bits.set := req_reg.set
   io.s_dir_w.bits.way := req_reg.way
@@ -161,6 +163,9 @@ class SliceCtrl()(implicit p: Parameters) extends HuanCunModule {
   io.bin_w.bits.DLCounter.L := 0.U // ignored
   io.bin_w.bits.DLCounter.L_sum := 0.U // ignored
 
+  io.age_w.bits.set := 0.U
+  io.age_w.bits.way := 0.U
+  io.age_w.bits.repl_msg := 0.U.asTypeOf(io.age_w.bits.repl_msg)
 
   io.bs_r_addr.valid := s_data_read =/= beatSize.U
   io.bs_r_addr.bits.way := req_reg.way
