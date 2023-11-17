@@ -238,3 +238,17 @@ class PrefetchRecv extends Bundle {
   val addr_valid = Bool()
   val l2_pf_en = Bool()
 }
+
+class TPmetaReq extends Bundle {
+  // FIXME: parameterize the hard code
+  val hartid = UInt(4.W) // max 16 harts
+  val set = UInt(32.W)
+  val way = UInt(8.W)
+  val wmode = Bool()
+  val rawData = Vec(16, UInt((36-6).W))
+}
+
+class TPmetaResp extends Bundle {
+  val hartid = UInt(4.W)
+  val rawData = Vec(16, UInt((36-6).W))
+}
