@@ -1708,6 +1708,7 @@ class MSHR()(implicit p: Parameters) extends BaseMSHR[DirResult, SelfDirWrite, S
   when(will_be_free) {
     meta_valid := false.B
     req_valid := false.B
+    isSampleSets_valid := false.B
     releaseThrough := false.B
     releaseDrop := false.B
     probeAckDataThrough := false.B

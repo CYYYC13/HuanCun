@@ -47,6 +47,11 @@ class DirRead(implicit p: Parameters) extends HuanCunBundle {
   val way = UInt(log2Ceil(maxWays).W)
   val tripCount = UInt(1.W)
   val useCount = UInt(2.W)
+
+  // for replLog
+  val channel = UInt(3.W)
+  val opcode = UInt(3.W)
+  val param = UInt(2.W)
 }
 
 class AgeEntry(implicit p: Parameters) extends HuanCunBundle {
@@ -113,6 +118,7 @@ class SubDirectory[T <: Data](
       // for L3-replacement
       val repl_msg = if(SelfDir_flag == true) Some(Vec(ways, new AgeEntry)) else None
       val old_age = if(SelfDir_flag == true) Some(new AgeEntry) else None
+      val hitVec = if(SelfDir_flag == true) Some(Vec(ways, UInt(1.W))) else None
     })
     val tag_w = Flipped(DecoupledIO(new Bundle() {
       val tag = UInt(tagBits.W)
@@ -306,6 +312,7 @@ class SubDirectory[T <: Data](
   if(SelfDir_flag == true) {
     io.resp.bits.repl_msg.foreach(_ := ages_s2)
     io.resp.bits.old_age.foreach(_ := ages_s2(way_s2))
+    io.resp.bits.hitVec.foreach(_ := hitVec)
   }
 
   metaArray.io.w(

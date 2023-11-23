@@ -8,7 +8,7 @@ import huancun.MetaData._
 import huancun._
 import huancun.debug.{DirectoryLogger, TypeId}
 import huancun.utils._
-import utility.{ParallelMax, ParallelMin, ParallelPriorityMux}
+import utility.{ParallelMin, ParallelPriorityMux, ChiselDB}
 
 trait HasClientInfo { this: HasHuanCunParameters =>
   // assume all clients have same params
@@ -21,6 +21,22 @@ trait HasClientInfo { this: HasHuanCunParameters =>
   val clientSetBits = log2Ceil(clientSets)
   val clientWayBits = log2Ceil(clientWays)
   val clientTagBits = addressBits - clientSetBits - offsetBits
+}
+
+class replBundle(implicit p: Parameters) extends HuanCunBundle {
+  val channel = UInt(3.W)
+  val opcode = UInt(3.W)
+  val param = UInt(2.W)
+  //val addr = UInt((tagBits + setBits).W)
+  val tag = UInt(tagBits.W)
+  val sset = UInt(setBits.W)  //'set' is C++ common word, use 'sset' instead
+  val bank = UInt(2.W)
+  val tripCount = UInt(1.W)
+  val useCount = UInt(2.W)
+  val selectedWay = UInt(wayBits.W)
+  val hitVec = Vec(cacheParams.ways, UInt(1.W))
+  val age = Vec(cacheParams.ways, UInt(2.W))
+  val wayCnt = Vec(cacheParams.ways, UInt(30.W))
 }
 
 class DLCounterEntry(implicit p: Parameters) extends HuanCunBundle {
@@ -138,6 +154,7 @@ trait NonInclusiveCacheReplacerUpdate { this: HasUpdate =>
 
 class DirectoryIO(implicit p: Parameters) extends BaseDirectoryIO[DirResult, SelfDirWrite, SelfTagWrite] {
   val read = Flipped(DecoupledIO(new DirRead))
+  val sliceId = Input(UInt(2.W))
   val result = ValidIO(new DirResult)
   val dirWReq = Flipped(DecoupledIO(new SelfDirWrite))
   val tagWReq = Flipped(DecoupledIO(new SelfTagWrite))
@@ -331,8 +348,15 @@ class Directory(implicit p: Parameters)
   req.ready := Cat(rports.map(_.ready)).andR && readyMask
   val reqValidReg = RegNext(req.fire, false.B)
   val reqIdOHReg = RegEnable(req.bits.idOH, req.fire) // generate idOH in advance to index MSHRs
+  // delay 2 cycles and hold until next valid coming
   val sourceIdReg = RegEnable(RegEnable(req.bits.source, req.fire), reqValidReg)
   val setReg = RegEnable(RegEnable(req.bits.set, req.fire), reqValidReg)
+  val channelReg = RegEnable(RegEnable(req.bits.channel, req.fire), reqValidReg)
+  val opcodeReg = RegEnable(RegEnable(req.bits.opcode, req.fire), reqValidReg)
+  val paramReg = RegEnable(RegEnable(req.bits.param, req.fire), reqValidReg)
+  val tagReg = RegEnable(RegEnable(req.bits.tag, req.fire), reqValidReg)
+  val tripCountReg = RegEnable(RegEnable(req.bits.tripCount, req.fire), reqValidReg)
+  val useCountReg = RegEnable(RegEnable(req.bits.useCount, req.fire), reqValidReg)
   val replacerInfoReg = RegEnable(RegEnable(req.bits.replacerInfo, req.fire), reqValidReg)
   val resp = io.result
   val clientResp = clientDir.io.resp
@@ -486,6 +510,28 @@ class Directory(implicit p: Parameters)
   }
   io.binWReq.ready := selfDir.io.tag_w.ready && readyMask
 
+  val wayCnt = RegInit(Vec(cacheParams.ways, UInt(30.W)), 0.U.asTypeOf(Vec(cacheParams.ways, UInt(30.W))))
+  when(io.result.valid) {
+    wayCnt(io.result.bits.self.way) := wayCnt(io.result.bits.self.way) + 1.U
+  }
+  val replDB = ChiselDB.createTable("l3_repl", new replBundle(), basicDB = true)
+  val replInfo = Wire(new replBundle())
+  replInfo.channel := channelReg
+  replInfo.opcode := opcodeReg
+  replInfo.param := paramReg
+  replInfo.tag := tagReg
+  replInfo.sset := setReg
+  replInfo.bank := io.sliceId
+  replInfo.tripCount := tripCountReg
+  replInfo.useCount := useCountReg
+  replInfo.selectedWay := io.result.bits.self.way
+  replInfo.hitVec := selfResp.bits.hitVec.getOrElse(0.U.asTypeOf(replInfo.hitVec))
+  replInfo.age.zipWithIndex.foreach {
+    case(m, i) =>
+      m := resp.bits.self.repl_msg(i).age
+  }
+  replInfo.wayCnt := wayCnt
+  replDB.log(replInfo, RegNext(io.result.valid), s"L3_repl_${io.sliceId}", clock, reset)
 
   assert(dirReadPorts == 1)
   val req_r = RegEnable(req.bits, req.fire)

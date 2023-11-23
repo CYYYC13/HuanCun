@@ -209,6 +209,9 @@ class MSHRAlloc(implicit p: Parameters) extends HuanCunModule {
   dirRead.bits.way := DontCare
   dirRead.bits.tripCount := request.bits.tripCount
   dirRead.bits.useCount := request.bits.useCount
+  dirRead.bits.channel := Mux(io.c_req.valid, 2.U, Mux(io.b_req.valid, 1.U, Mux(io.a_req.valid, 0.U, 3.U)))
+  dirRead.bits.opcode := request.bits.opcode
+  dirRead.bits.param := request.bits.param
 
   val cntStart = RegInit(false.B)
   when(dirRead.ready) {
