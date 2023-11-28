@@ -42,12 +42,18 @@ class DirRead(implicit p: Parameters) extends HuanCunBundle {
   val source = UInt(sourceIdBits.W)
   val wayMode = Bool()
   val way = UInt(log2Ceil(maxWays).W)
+
+  // for replLog
+  val channel = UInt(3.W)
+  val opcode = UInt(3.W)
+  val param = UInt(2.W)
 }
 
 abstract class BaseDirectoryIO[T_RESULT <: BaseDirResult, T_DIR_W <: BaseDirWrite, T_TAG_W <: BaseTagWrite](
   implicit p: Parameters)
     extends HuanCunBundle {
   val read:    DecoupledIO[DirRead]
+  val sliceId: UInt
   val result:  Valid[T_RESULT]
   val dirWReq: DecoupledIO[T_DIR_W]
   val tagWReq:  DecoupledIO[T_TAG_W]
@@ -88,6 +94,7 @@ class SubDirectory[T <: Data](
       val tag = UInt(tagBits.W)
       val dir = dir_init.cloneType
       val error = Bool()
+      val hitway = UInt(wayBits.W)
     })
     val tag_w = Flipped(DecoupledIO(new Bundle() {
       val tag = UInt(tagBits.W)
@@ -205,6 +212,7 @@ class SubDirectory[T <: Data](
 
   val hit_s2 = RegEnable(hit_s1, false.B, reqValidReg)
   val way_s2 = RegEnable(way_s1, 0.U, reqValidReg)
+  val hitWay_s2 = RegEnable(hitWay, 0.U, reqValidReg)
   val metaAll_s2 = RegEnable(metas, reqValidReg)
   val tagAll_s2 = RegEnable(tagRead, reqValidReg)
   val meta_s2 = metaAll_s2(way_s2)
@@ -219,6 +227,7 @@ class SubDirectory[T <: Data](
   io.resp.bits.dir := meta_s2
   io.resp.bits.tag := tag_s2
   io.resp.bits.error := io.resp.bits.hit && error_s2
+  io.resp.bits.hitway := hitWay_s2
 
   metaArray.io.w(
     !resetFinish || dir_wen,
