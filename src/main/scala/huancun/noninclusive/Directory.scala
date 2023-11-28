@@ -3,12 +3,13 @@ package huancun.noninclusive
 import org.chipsalliance.cde.config.Parameters
 import chisel3._
 import chisel3.util._
+import firrtl.transforms.DontTouchAnnotation
 import freechips.rocketchip.tilelink.TLMessages
 import huancun.MetaData._
 import huancun._
 import huancun.debug.{DirectoryLogger, TypeId}
 import huancun.utils._
-import utility.{ParallelMin, ParallelPriorityMux, ChiselDB}
+import utility.{ChiselDB, ParallelMin, ParallelPriorityMux}
 
 trait HasClientInfo { this: HasHuanCunParameters =>
   // assume all clients have same params
@@ -34,7 +35,8 @@ class replBundle(implicit p: Parameters) extends HuanCunBundle {
   val tripCount = UInt(1.W)
   val useCount = UInt(2.W)
   val selectedWay = UInt(wayBits.W)
-  val hitVec = Vec(cacheParams.ways, UInt(1.W))
+  val hit = UInt(1.W)
+  val hitway = UInt(wayBits.W)
   val age = Vec(cacheParams.ways, UInt(2.W))
   val wayCnt = Vec(cacheParams.ways, UInt(30.W))
 }
@@ -171,6 +173,9 @@ class Directory(implicit p: Parameters)
 
   val stamp = GTimer()
   val selfDirW = io.dirWReq
+  val sliceId = WireInit(0.U)
+  sliceId := io.sliceId
+  dontTouch(sliceId)
   // dump self dir
   DirectoryLogger(cacheParams.name, TypeId.self_dir)(
     selfDirW.bits.set,
@@ -511,7 +516,7 @@ class Directory(implicit p: Parameters)
   io.binWReq.ready := selfDir.io.tag_w.ready && readyMask
 
   val wayCnt = RegInit(Vec(cacheParams.ways, UInt(30.W)), 0.U.asTypeOf(Vec(cacheParams.ways, UInt(30.W))))
-  when(io.result.valid) {
+  when(RegNext(io.result.valid)) {
     wayCnt(io.result.bits.self.way) := wayCnt(io.result.bits.self.way) + 1.U
   }
   val replDB = ChiselDB.createTable("l3_repl", new replBundle(), basicDB = true)
@@ -525,13 +530,14 @@ class Directory(implicit p: Parameters)
   replInfo.tripCount := tripCountReg
   replInfo.useCount := useCountReg
   replInfo.selectedWay := io.result.bits.self.way
-  replInfo.hitVec := selfResp.bits.hitVec.getOrElse(0.U.asTypeOf(replInfo.hitVec))
+  replInfo.hit := Mux(selfResp.bits.hit, 1.U, 0.U)
+  replInfo.hitway := selfResp.bits.hitway.getOrElse(0.U.asTypeOf(replInfo.hitway))
   replInfo.age.zipWithIndex.foreach {
     case(m, i) =>
       m := resp.bits.self.repl_msg(i).age
   }
   replInfo.wayCnt := wayCnt
-  replDB.log(replInfo, RegNext(io.result.valid), s"L3_repl_${io.sliceId}", clock, reset)
+  replDB.log(replInfo, RegNext(io.result.valid), s"L3_repl_${sliceId}", clock, reset)
 
   assert(dirReadPorts == 1)
   val req_r = RegEnable(req.bits, req.fire)

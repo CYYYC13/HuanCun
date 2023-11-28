@@ -118,7 +118,7 @@ class SubDirectory[T <: Data](
       // for L3-replacement
       val repl_msg = if(SelfDir_flag == true) Some(Vec(ways, new AgeEntry)) else None
       val old_age = if(SelfDir_flag == true) Some(new AgeEntry) else None
-      val hitVec = if(SelfDir_flag == true) Some(Vec(ways, UInt(1.W))) else None
+      val hitway = if(SelfDir_flag == true) Some(UInt(wayBits.W)) else None
     })
     val tag_w = Flipped(DecoupledIO(new Bundle() {
       val tag = UInt(tagBits.W)
@@ -292,6 +292,7 @@ class SubDirectory[T <: Data](
 
   val hit_s2 = RegEnable(hit_s1, false.B, reqValidReg)
   val way_s2 = RegEnable(way_s1, 0.U, reqValidReg)
+  val hitWay_s2 = RegEnable(hitWay, 0.U, reqValidReg)
   val metaAll_s2 = RegEnable(metas, reqValidReg)
   val tagAll_s2 = RegEnable(tagRead, reqValidReg)
   val meta_s2 = metaAll_s2(way_s2)
@@ -312,7 +313,7 @@ class SubDirectory[T <: Data](
   if(SelfDir_flag == true) {
     io.resp.bits.repl_msg.foreach(_ := ages_s2)
     io.resp.bits.old_age.foreach(_ := ages_s2(way_s2))
-    io.resp.bits.hitVec.foreach(_ := hitVec)
+    io.resp.bits.hitway.foreach(_ := hitWay_s2)
   }
 
   metaArray.io.w(

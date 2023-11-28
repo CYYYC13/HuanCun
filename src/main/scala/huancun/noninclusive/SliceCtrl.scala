@@ -116,6 +116,9 @@ class SliceCtrl()(implicit p: Parameters) extends HuanCunModule {
   io.dir_read.bits.source := DontCare
   io.dir_read.bits.tripCount := DontCare
   io.dir_read.bits.useCount := DontCare
+  io.dir_read.bits.channel := DontCare
+  io.dir_read.bits.opcode := DontCare
+  io.dir_read.bits.param := DontCare
 
   when(io.dir_result.fire){
     switch(req_reg.cmd){
