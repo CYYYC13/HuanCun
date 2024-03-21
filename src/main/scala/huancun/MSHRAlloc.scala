@@ -158,9 +158,10 @@ class MSHRAlloc(implicit p: Parameters) extends HuanCunModule {
         io.a_req.valid && !conflict_a && !io.b_req.valid && !io.c_req.valid
       )
     ) && selectedMSHROH(i)
+//    mshrSampleSets.bits := true.B
     mshrSampleSets.bits := Mux(
-      (request.bits.set(6,4) & request.bits.set(2,0)) === 0.U, // for tltest
-      // (request.bits.set(11,6) & request.bits.set(5,0)) === 0.U,
+//      (request.bits.set(6,4) & request.bits.set(2,0)) === 0.U, // for original 1-slice tltest
+      (request.bits.set(11,6) & request.bits.set(5,0)) === 0.U,
       true.B,
       false.B)
   }

@@ -106,6 +106,8 @@ class SinkCResp(implicit p: Parameters) extends HuanCunBundle {
   val last = Bool()
   val set = UInt(setBits.W) // The target address of the transfer, but only set is enough
   val bufIdx = UInt(bufIdxBits.W)
+  val tripCount = UInt(1.W)
+  val useCount = UInt(2.W)
 }
 class SinkDResp(implicit p: Parameters) extends HuanCunBundle {
   // Grant / AccessAck / ReleaseAck

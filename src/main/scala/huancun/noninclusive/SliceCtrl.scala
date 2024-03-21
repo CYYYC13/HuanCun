@@ -164,9 +164,12 @@ class SliceCtrl()(implicit p: Parameters) extends HuanCunModule {
   io.c_tag_w.bits.tag := req_reg.tag
 
   io.bin_w.bits.binNumber := 0.U  // ignored
-  io.bin_w.bits.DLCounter.D_L := 0.U // ignored
-  io.bin_w.bits.DLCounter.L := 0.U // ignored
-  io.bin_w.bits.DLCounter.L_sum := 0.U // ignored
+  io.bin_w.bits.DLCounter.zipWithIndex.foreach {  // ignored
+    case(m, i) =>
+      m.D_L := 0.U
+      m.L := 0.U
+      m.L_sum := 0.U
+  }
 
   io.age_w.bits.set := 0.U
   io.age_w.bits.way := 0.U

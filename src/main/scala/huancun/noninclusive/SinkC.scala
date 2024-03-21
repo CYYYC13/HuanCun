@@ -91,6 +91,8 @@ class SinkC(implicit p: Parameters) extends BaseSinkC {
   io.resp.bits.last := last
   io.resp.bits.set := set
   io.resp.bits.bufIdx := Mux(first, insertIdx, insertIdxReg)
+  io.resp.bits.tripCount := c.bits.echo.lift(TripCountKey).getOrElse(0.U)
+  io.resp.bits.useCount := c.bits.echo.lift(UseCountKey).getOrElse(0.U)
 
   val task = io.task.bits
   val task_r = RegEnable(io.task.bits, io.task.fire)

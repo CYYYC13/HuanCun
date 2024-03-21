@@ -34,6 +34,9 @@ class replBundle(implicit p: Parameters) extends HuanCunBundle {
   val bank = UInt(2.W)
   val tripCount = UInt(1.W)
   val useCount = UInt(2.W)
+  val L = Vec(8, UInt(10.W))
+  val D_L = Vec(8, UInt(18.W))
+  val L_sum = UInt(20.W)
   val selectedWay = UInt(wayBits.W)
   val hit = UInt(1.W)
   val hitway = UInt(wayBits.W)
@@ -42,9 +45,9 @@ class replBundle(implicit p: Parameters) extends HuanCunBundle {
 }
 
 class DLCounterEntry(implicit p: Parameters) extends HuanCunBundle {
-  val D_L = UInt(10.W)
-  val L = UInt(10.W)
-  val L_sum = UInt(10.W)
+  val D_L = UInt(20.W)
+  val L = UInt(20.W)
+  val L_sum = UInt(20.W)
 }
 
 /*
@@ -92,7 +95,7 @@ class ClientDirResult(implicit p: Parameters) extends HuanCunBundle with HasClie
 class DirResult(implicit p: Parameters) extends BaseDirResult with HasClientInfo {
   val self = new SelfDirResult
   val clients = new ClientDirResult
-  val binCounter = new DLCounterEntry
+  val binCounter = Vec(8, new DLCounterEntry())
   val sourceId = UInt(sourceIdBits.W)
   val set = UInt(setBits.W)
   val replacerInfo = new ReplacerInfo
@@ -137,7 +140,7 @@ class ClientDirWrite(implicit p: Parameters) extends HuanCunBundle with HasClien
 
 class BinCounterWrite(implicit p: Parameters) extends HuanCunBundle {
   val binNumber = UInt(3.W)
-  val DLCounter = new DLCounterEntry
+  val DLCounter = Vec(8, new DLCounterEntry)
 }
 
 class AgeWrite(implicit p: Parameters) extends HuanCunBundle {
@@ -274,7 +277,7 @@ class Directory(implicit p: Parameters)
    */
 
   // add L3-replacement
-    // do not use repl, which is made by old replacement in SubDirectory
+    // do not use "repl" args, which is made by old replacement in SubDirectory
   def self_invalid_way_sel(metaVec: Seq[SelfDirAgeEntry], repl: UInt): (Bool, UInt) = {
     // 1.try to find a invalid way
     val invalid_vec = metaVec.map(_.meta.state === MetaData.INVALID)
@@ -395,9 +398,12 @@ class Directory(implicit p: Parameters)
   resp.bits.clients.tag_match := clientResp.bits.hit
 
   val binNumber = req.bits.tripCount * 4.U + req.bits.useCount
-  resp.bits.binCounter.L := binCounterArray(binNumber).L
-  resp.bits.binCounter.D_L := binCounterArray(binNumber).L
-  resp.bits.binCounter.L_sum := binCounterArray(1).L +  binCounterArray(2).L + binCounterArray(3).L
+  resp.bits.binCounter.zipWithIndex.foreach {
+    case (m, i) =>
+      m.L := binCounterArray(i).L
+      m.D_L := binCounterArray(i).D_L
+      m.L_sum := binCounterArray(1).L +  binCounterArray(2).L + binCounterArray(3).L
+  }
 
   // Self Tag Write
   selfDir.io.tag_w.valid := io.tagWReq.valid
@@ -511,7 +517,7 @@ class Directory(implicit p: Parameters)
 
   // Bin Counter Write
   when(io.binWReq.valid){
-    binCounterArray(io.binWReq.bits.binNumber) := io.binWReq.bits.DLCounter
+    binCounterArray := io.binWReq.bits.DLCounter
   }
   io.binWReq.ready := selfDir.io.tag_w.ready && readyMask
 
@@ -529,6 +535,15 @@ class Directory(implicit p: Parameters)
   replInfo.bank := io.sliceId
   replInfo.tripCount := tripCountReg
   replInfo.useCount := useCountReg
+  replInfo.L.zipWithIndex.foreach {
+    case(m, i) =>
+      m := resp.bits.binCounter(i).L
+  }
+  replInfo.D_L.zipWithIndex.foreach {
+    case (m, i) =>
+      m := resp.bits.binCounter(i).D_L
+  }
+  replInfo.L_sum := resp.bits.binCounter(1).L_sum
   replInfo.selectedWay := io.result.bits.self.way
   replInfo.hit := Mux(selfResp.bits.hit, 1.U, 0.U)
   replInfo.hitway := selfResp.bits.hitway.getOrElse(0.U.asTypeOf(replInfo.hitway))
