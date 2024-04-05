@@ -34,8 +34,8 @@ class replBundle(implicit p: Parameters) extends HuanCunBundle {
   val bank = UInt(2.W)
   val tripCount = UInt(1.W)
   val useCount = UInt(2.W)
-  val L = Vec(8, UInt(10.W))
-  val D_L = Vec(8, UInt(18.W))
+  val L = Vec(8, UInt(20.W))
+  val D_L = Vec(8, UInt(20.W))
   val L_sum = UInt(20.W)
   val selectedWay = UInt(wayBits.W)
   val hit = UInt(1.W)
@@ -43,6 +43,26 @@ class replBundle(implicit p: Parameters) extends HuanCunBundle {
   val age = Vec(cacheParams.ways, UInt(2.W))
   val wayCnt = Vec(cacheParams.ways, UInt(30.W))
 }
+
+class replWBundle(implicit p: Parameters) extends HuanCunBundle {
+  val wL = Vec(8, UInt(20.W))
+  val wD_L = Vec(8, UInt(20.W))
+  val wage = Vec(cacheParams.ways, UInt(2.W))
+  val channel = UInt(3.W)
+  val opcode = UInt(3.W)
+  val param = UInt(2.W)
+  val sset = UInt(setBits.W)
+  val way = UInt(wayBits.W)
+  val tripCount = UInt(1.W)
+  val useCount = UInt(2.W)
+  val rL = Vec(8, UInt(20.W))
+  val rD_L = Vec(8, UInt(20.W))
+  val rage = Vec(cacheParams.ways, UInt(2.W))
+  val hit = Bool()
+  val isSample = Bool()
+}
+
+
 
 class DLCounterEntry(implicit p: Parameters) extends HuanCunBundle {
   val D_L = UInt(20.W)
@@ -61,6 +81,9 @@ class SelfDirEntry(implicit p: Parameters) extends HuanCunBundle {
   val state = UInt(stateBits.W)
   val clientStates = Vec(clientBits, UInt(stateBits.W))
   val prefetch = if (hasPrefetchBit) Some(Bool()) else None // whether the block is prefetched
+  // for l3-replacement
+  val tripCount = UInt(1.W)
+  val useCount = UInt(2.W)
 }
 
 class ClientDirEntry(implicit p: Parameters) extends HuanCunBundle {
@@ -141,6 +164,17 @@ class ClientDirWrite(implicit p: Parameters) extends HuanCunBundle with HasClien
 class BinCounterWrite(implicit p: Parameters) extends HuanCunBundle {
   val binNumber = UInt(3.W)
   val DLCounter = Vec(8, new DLCounterEntry)
+  // for debug(l3_repl_writeDir)
+  val channel = UInt(3.W)
+  val opcode = UInt(3.W)
+  val param = UInt(2.W)
+  val rL = Vec(8, UInt(20.W))
+  val rD_L = Vec(8, UInt(20.W))
+  val rage = Vec(cacheParams.ways, UInt(2.W))
+  val tripCount = UInt(1.W)
+  val useCount = UInt(2.W)
+  val hit = Bool()
+  val isSample = Bool()
 }
 
 class AgeWrite(implicit p: Parameters) extends HuanCunBundle {
@@ -224,6 +258,16 @@ class Directory(implicit p: Parameters)
     this.clock,
     this.reset
   )
+  val resetFinish = RegInit(false.B)
+  val resetIdx = RegInit((1024 - 1).U)
+  val cycleCnt = Counter(true.B, 2)
+  val resetMask = if (clk_div_by_2) cycleCnt._1(0) else true.B
+  when(resetIdx === 0.U && resetMask) {
+    resetFinish := true.B
+  }
+  when(!resetFinish && resetMask) {
+    resetIdx := resetIdx - 1.U
+  }
 
   def client_invalid_way_fn(metaVec: Seq[Vec[ClientDirEntry]], repl: UInt): (Bool, UInt) = {
     val invalid_vec = metaVec.map(states => Cat(states.map(_.state === INVALID)).andR)
@@ -283,8 +327,14 @@ class Directory(implicit p: Parameters)
     val invalid_vec = metaVec.map(_.meta.state === MetaData.INVALID)
     val has_invalid_way = Cat(invalid_vec).orR
     val invalid_way = ParallelPriorityMux(invalid_vec.zipWithIndex.map(x => x._1 -> x._2.U(wayBits.W)))
-    // 2.if there is no invalid way, then try to find a way with minimum age
+    // 2.if there is no invalid way, then try to find a TRUNK to replace
+    //  (we are non-inclusive, if we are trunk, there must be a TIP in our client)
+    // so if min_age_way is trunk, choose min_age_way; if not, choose trunk way
+    // if no trunk way, choose min_age_way
     // 3. if there are two or more ways with the same minimum age, chose the way with minimum way_id
+    val trunk_vec = metaVec.map(_.meta.state === MetaData.TRUNK)
+    val has_trunk_way = Cat(trunk_vec).orR
+    val trunk_way = ParallelPriorityMux(trunk_vec.zipWithIndex.map(x => x._1 -> x._2.U(wayBits.W)))
     val age_vec = metaVec.map(_.age)
     val min_age = ParallelMin(age_vec)
     val min_age_way = WireInit(invalid_way)
@@ -294,6 +344,7 @@ class Directory(implicit p: Parameters)
           min_age_way := i.U
         }
     }
+    val min_age_way_is_trunk = VecInit(metaVec)(min_age_way).meta.state === MetaData.TRUNK
     (
       has_invalid_way,
       Mux(has_invalid_way, invalid_way, min_age_way)
@@ -327,8 +378,17 @@ class Directory(implicit p: Parameters)
   )
 
   // val DL = new DLCounterEntry()
-  val binCounterArray_init = 0.U.asTypeOf(Vec(8, new DLCounterEntry()))
-  val binCounterArray = WireInit(binCounterArray_init)
+  val binCounterArray_init = 0.U.asTypeOf(new DLCounterEntry())
+  val binCounterArray = Module(new SRAMTemplate(new DLCounterEntry(), 1, 8, singlePort = true, input_clk_div_by_2 = clk_div_by_2))
+  binCounterArray.io.w(
+    io.binWReq.valid,
+    Mux(resetFinish, io.binWReq.bits.DLCounter, 0.U.asTypeOf(io.binWReq.bits.DLCounter)),
+    Mux(resetFinish, 1.U, resetIdx),
+    Fill(8, true.B)
+  )
+
+
+//  val binCounterArray = RegInit(binCounterArray_init)
 
   def addrConnect(lset: UInt, ltag: UInt, rset: UInt, rtag: UInt) = {
     assert(lset.getWidth + ltag.getWidth == rset.getWidth + rtag.getWidth)
@@ -351,7 +411,7 @@ class Directory(implicit p: Parameters)
   }
 
   val clk_div_by_2 = p(HCCacheParamsKey).sramClkDivBy2
-  val cycleCnt = Counter(true.B, 2)
+//  val cycleCnt = Counter(true.B, 2)
   val readyMask = if (clk_div_by_2) cycleCnt._1(0) else true.B
   req.ready := Cat(rports.map(_.ready)).andR && readyMask
   val reqValidReg = RegNext(req.fire, false.B)
@@ -386,6 +446,8 @@ class Directory(implicit p: Parameters)
   resp.bits.self.prefetch.foreach(p => p := selfResp.bits.dir.prefetch.get)
   resp.bits.self.repl_msg := selfResp.bits.repl_msg.getOrElse(0.U.asTypeOf(resp.bits.self.repl_msg))
   resp.bits.self.oldAge := selfResp.bits.old_age.getOrElse(0.U.asTypeOf(resp.bits.self.oldAge))
+  resp.bits.self.tripCount := selfResp.bits.dir.tripCount
+  resp.bits.self.useCount := selfResp.bits.dir.useCount
   resp.bits.clients.way := clientResp.bits.way
   resp.bits.clients.tag := clientResp.bits.tag
   resp.bits.clients.error := Cat(resp.bits.clients.states.map(_.hit)).orR && clientResp.bits.error
@@ -398,12 +460,18 @@ class Directory(implicit p: Parameters)
   resp.bits.clients.tag_match := clientResp.bits.hit
 
   val binNumber = req.bits.tripCount * 4.U + req.bits.useCount
+//  resp.bits.binCounter.zipWithIndex.foreach {
+//    case (m, i) =>
+//      m.L := binCounterArray(i).L
+//      m.D_L := binCounterArray(i).D_L
+//      m.L_sum := binCounterArray(1).L +  binCounterArray(2).L + binCounterArray(3).L
+//  }
+
   resp.bits.binCounter.zipWithIndex.foreach {
-    case (m, i) =>
-      m.L := binCounterArray(i).L
-      m.D_L := binCounterArray(i).D_L
-      m.L_sum := binCounterArray(1).L +  binCounterArray(2).L + binCounterArray(3).L
+    case(m, i) =>
+      m := binCounterArray.io.r(io.read.fire, 0.U).resp.data(i)
   }
+
 
   // Self Tag Write
   selfDir.io.tag_w.valid := io.tagWReq.valid
@@ -516,44 +584,76 @@ class Directory(implicit p: Parameters)
   clientDir.io.age_w.bits.repl_msg := 0.U.asTypeOf(clientDir.io.age_w.bits.repl_msg)
 
   // Bin Counter Write
-  when(io.binWReq.valid){
-    binCounterArray := io.binWReq.bits.DLCounter
-  }
+//  when(io.binWReq.valid){
+//    binCounterArray := io.binWReq.bits.DLCounter
+//  }
   io.binWReq.ready := selfDir.io.tag_w.ready && readyMask
 
   val wayCnt = RegInit(Vec(cacheParams.ways, UInt(30.W)), 0.U.asTypeOf(Vec(cacheParams.ways, UInt(30.W))))
   when(RegNext(io.result.valid)) {
     wayCnt(io.result.bits.self.way) := wayCnt(io.result.bits.self.way) + 1.U
   }
-  val replDB = ChiselDB.createTable("l3_repl", new replBundle(), basicDB = true)
-  val replInfo = Wire(new replBundle())
-  replInfo.channel := channelReg
-  replInfo.opcode := opcodeReg
-  replInfo.param := paramReg
-  replInfo.tag := tagReg
-  replInfo.sset := setReg
-  replInfo.bank := io.sliceId
-  replInfo.tripCount := tripCountReg
-  replInfo.useCount := useCountReg
-  replInfo.L.zipWithIndex.foreach {
+  // record reading Directory's replacement messages
+  val replRDB = ChiselDB.createTable("l3_repl_readDir", new replBundle(), basicDB = true)
+  val replRInfo = Wire(new replBundle())
+  replRInfo.channel := channelReg
+  replRInfo.opcode := opcodeReg
+  replRInfo.param := paramReg
+  replRInfo.tag := tagReg
+  replRInfo.sset := setReg
+  replRInfo.bank := io.sliceId
+  replRInfo.tripCount := tripCountReg
+  replRInfo.useCount := useCountReg
+  replRInfo.L.zipWithIndex.foreach {
     case(m, i) =>
       m := resp.bits.binCounter(i).L
   }
-  replInfo.D_L.zipWithIndex.foreach {
+  replRInfo.D_L.zipWithIndex.foreach {
     case (m, i) =>
       m := resp.bits.binCounter(i).D_L
   }
-  replInfo.L_sum := resp.bits.binCounter(1).L_sum
-  replInfo.selectedWay := io.result.bits.self.way
-  replInfo.hit := Mux(selfResp.bits.hit, 1.U, 0.U)
-  replInfo.hitway := selfResp.bits.hitway.getOrElse(0.U.asTypeOf(replInfo.hitway))
-  replInfo.age.zipWithIndex.foreach {
+  replRInfo.L_sum := resp.bits.binCounter(1).L_sum
+  replRInfo.selectedWay := io.result.bits.self.way
+  replRInfo.hit := Mux(selfResp.bits.hit, 1.U, 0.U)
+  replRInfo.hitway := selfResp.bits.hitway.getOrElse(0.U.asTypeOf(replRInfo.hitway))
+  replRInfo.age.zipWithIndex.foreach {
     case(m, i) =>
       m := resp.bits.self.repl_msg(i).age
   }
-  replInfo.wayCnt := wayCnt
-  replDB.log(replInfo, RegNext(io.result.valid), s"L3_repl_${sliceId}", clock, reset)
+  replRInfo.wayCnt := wayCnt
+  replRDB.log(replRInfo, RegNext(io.result.valid), s"L3_repl_${sliceId}", clock, reset)
 
+  // record write Directory's replacement messages
+  val replWDB = ChiselDB.createTable("l3_repl_writeDir", new replWBundle(), basicDB = true)
+  val replWInfo = Wire(new replWBundle())
+  replWInfo.channel := io.binWReq.bits.channel
+  replWInfo.opcode := io.binWReq.bits.opcode
+  replWInfo.param := io.binWReq.bits.param
+  replWInfo.rL := io.binWReq.bits.rL
+  replWInfo.rD_L := io.binWReq.bits.rD_L
+  replWInfo.rage := io.binWReq.bits.rage
+  replWInfo.sset := io.dirWReq.bits.set
+  replWInfo.way := io.dirWReq.bits.way
+  replWInfo.tripCount := io.binWReq.bits.tripCount
+  replWInfo.useCount := io.binWReq.bits.useCount
+  replWInfo.wL.zipWithIndex.foreach {
+    case(m, i) =>
+      m := io.binWReq.bits.DLCounter(i).L
+  }
+  replWInfo.wD_L.zipWithIndex.foreach {
+    case (m, i) =>
+      m := io.binWReq.bits.DLCounter(i).D_L
+  }
+  replWInfo.wage.zipWithIndex.foreach {
+    case(m, i) =>
+      m := io.ageWReq.bits.repl_msg(i).age
+  }
+  replWInfo.hit := io.binWReq.bits.hit
+  replWInfo.isSample := io.binWReq.bits.isSample
+
+  replWDB.log(replWInfo, io.binWReq.valid, s"L3_repl_${sliceId}", clock, reset)
+
+  assert(io.binWReq.bits.rL(1) <= io.binWReq.bits.DLCounter(1).L)
   assert(dirReadPorts == 1)
   val req_r = RegEnable(req.bits, req.fire)
   XSPerfAccumulate(cacheParams, "selfdir_A_req", req_r.replacerInfo.channel(0) && resp.valid)
