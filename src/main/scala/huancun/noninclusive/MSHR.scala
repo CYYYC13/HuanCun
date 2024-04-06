@@ -9,7 +9,7 @@ import freechips.rocketchip.tilelink.TLHints._
 import huancun._
 import huancun.utils._
 import huancun.MetaData._
-import utility.{MemReqSource, ParallelMax}
+import utility.{MemReqSource, ParallelMax, ParallelMin}
 
 class C_Status(implicit p: Parameters) extends HuanCunBundle {
   // When C nest A, A needs to know the status of C and tells C to release through to next level
@@ -279,6 +279,21 @@ class MSHR()(implicit p: Parameters) extends BaseMSHR[DirResult, SelfDirWrite, S
     }
   }
 
+  val L = WireInit(VecInit(Seq.fill(8)(0.U(20.W))))
+  val DL = WireInit(VecInit(Seq.fill(8)(0.U(20.W))))
+  binCounter.zipWithIndex.foreach {
+    case (m, i) =>
+      L(i) := m.L
+      DL(i) := m.D_L
+  }
+  val max_L = ParallelMax(L)
+  val min_L = ParallelMin(L)
+  val max_DL = ParallelMax(DL)
+  val min_DL = ParallelMin(DL)
+  val DL_UC = binCounter(1).D_L + binCounter(2).D_L + binCounter(3).D_L + binCounter(5).D_L + binCounter(6).D_L + binCounter(7).D_L
+  val bypass = ((binCounter(binNumber).D_L >= ((max_DL + min_DL) / 2.U)) && (binCounter(binNumber).L <= ((max_L + min_L) / 2.U))) ||
+    (binCounter(binNumber).D_L >= ((DL_UC - DL_UC >> 2.U).asTypeOf(DL_UC)))
+
   def onCReq(): Unit = {
     // Release / ReleaseData
     new_self_meta.dirty := self_meta.hit && self_meta.dirty || req.dirty && isParamFromT(req.param)
@@ -302,6 +317,7 @@ class MSHR()(implicit p: Parameters) extends BaseMSHR[DirResult, SelfDirWrite, S
           clients_meta_reg(i).state
         )
     }
+
     new_self_meta.tripCount := req.tripCount
     new_self_meta.useCount := req.useCount
     // binNumber updates when:
@@ -337,49 +353,60 @@ class MSHR()(implicit p: Parameters) extends BaseMSHR[DirResult, SelfDirWrite, S
     new_self_meta.repl_msg.zipWithIndex.foreach {
       case (m, i) =>
         m.age := Mux(
-          will_save_release && !self_meta.hit && req.opcode(0),
-          Mux( // will write selftag (will update age)
-            self_meta.way === i.U,
-            Mux(  // update the new data's age
-              req.tripCount > 0.U,
-              3.U,
-              Mux(req.tripCount === 0.U &&
-                req.useCount > 0.U &&
-                binCounter(binNumber).D_L > (3.U * binCounter(binNumber).L)
-                // L < 3/4 L_sum
-                && (binCounter(binNumber).L < (binCounter(binNumber).L_sum - (binCounter(binNumber).L_sum >> 2.U).asTypeOf(binCounter(binNumber).L_sum))),
-                0.U,
-                1.U
+          !bypass,
+          Mux(  // bypass is false
+            will_save_release && !self_meta.hit && req.opcode(0),
+            Mux( // release miss, will write selftag
+              self_meta.way === i.U,
+              Mux(  // update the new data's age
+                req.tripCount > 0.U,
+                3.U,
+                Mux(req.tripCount === 0.U &&
+                  req.useCount > 0.U &&
+                  binCounter(binNumber).D_L > (3.U * binCounter(binNumber).L)
+                  // L < 3/4 L_sum
+                  && (binCounter(binNumber).L < (binCounter(binNumber).L_sum - (binCounter(binNumber).L_sum >> 2.U).asTypeOf(binCounter(binNumber).L_sum))),
+                  0.U,
+                  1.U
+                )
+              ),
+              Mux( // update other ways' age
+                self_meta.repl_msg(i).age >= self_meta.oldAge.age,
+                self_meta.repl_msg(i).age - self_meta.oldAge.age,
+                0.U
               )
             ),
-            Mux( // update other ways' age
-              self_meta.repl_msg(i).age >= self_meta.oldAge.age,
-              self_meta.repl_msg(i).age - self_meta.oldAge.age,
-              0.U
+            Mux( // release hit (will update age)
+              self_meta.way === i.U,
+              Mux(
+                req.tripCount > 0.U,
+                3.U,
+                Mux(req.tripCount === 0.U &&
+                  req.useCount > 0.U &&
+                  binCounter(binNumber).D_L > (3.U * binCounter(binNumber).L)
+                  // L < 3/4 L_sum
+                  && (binCounter(binNumber).L < (binCounter(binNumber).L_sum - (binCounter(binNumber).L_sum >> 2.U).asTypeOf(binCounter(binNumber).L_sum))),
+                  0.U,
+                  1.U
+                )
+              ),
+              self_meta.repl_msg(i).age
+  //            Mux( // update other ways' age
+  //              self_meta.repl_msg(i).age >= self_meta.oldAge.age,
+  //              self_meta.repl_msg(i).age - self_meta.oldAge.age,
+  //              0.U
+  //            )
+            ),
+  //          self_meta.repl_msg(i).age // will not write selftag (will not update age)
+          ),
+          Mux(  // bypass is true
+            self_meta.state === MetaData.INVALID,
+            Mux(self_meta.way === i.U, 0.U, self_meta.repl_msg(i).age),
+            Mux(self_meta.hit,
+              Mux(self_meta.way === i.U, 0.U, self_meta.repl_msg(i).age),
+              self_meta.repl_msg(i).age // bypass
             )
-          ),
-          Mux( // release hit (will update age)
-            self_meta.way === i.U,
-            Mux(
-              req.tripCount > 0.U,
-              3.U,
-              Mux(req.tripCount === 0.U &&
-                req.useCount > 0.U &&
-                binCounter(binNumber).D_L > (3.U * binCounter(binNumber).L)
-                // L < 3/4 L_sum
-                && (binCounter(binNumber).L < (binCounter(binNumber).L_sum - (binCounter(binNumber).L_sum >> 2.U).asTypeOf(binCounter(binNumber).L_sum))),
-                0.U,
-                1.U
-              )
-            ),
-            self_meta.repl_msg(i).age
-//            Mux( // update other ways' age
-//              self_meta.repl_msg(i).age >= self_meta.oldAge.age,
-//              self_meta.repl_msg(i).age - self_meta.oldAge.age,
-//              0.U
-//            )
-          ),
-//          self_meta.repl_msg(i).age // will not write selftag (will not update age)
+          )
         )
     }
 
@@ -930,7 +957,7 @@ class MSHR()(implicit p: Parameters) extends BaseMSHR[DirResult, SelfDirWrite, S
     when(client_shrink_perm) {
       s_wbclientsdir := false.B
     }
-    when(self_meta.hit){
+    when(will_save_release && self_meta.hit){
       s_wbage := false.B
     }
     when(will_save_release) {
@@ -1198,11 +1225,12 @@ class MSHR()(implicit p: Parameters) extends BaseMSHR[DirResult, SelfDirWrite, S
       }
     })
   }
+  val will_bypass = bypass && !self_meta.hit && self_meta.state =/= MetaData.INVALID
 
-  when(io_releaseThrough && io.dirResult.valid && req.fromC) {
+  when((io_releaseThrough || will_bypass) && io.dirResult.valid && req.fromC) {
     assert(req_valid)
     // TtoN or BtoN should release through
-    will_release_through := !other_clients_hit && isShrink(req.param)
+    will_release_through := (!other_clients_hit && isShrink(req.param)) || will_bypass
     // report or TtoB will be dropped
     will_drop_release := !will_release_through
     // if enter this part, we must NOT save release

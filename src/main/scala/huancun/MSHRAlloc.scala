@@ -178,14 +178,14 @@ class MSHRAlloc(implicit p: Parameters) extends HuanCunModule {
 
   bc_mshr_allocSampleSets.valid := (nestB_valid || tmpB_valid) && dirRead.ready
   bc_mshr_allocSampleSets.bits := Mux(
-    (io.b_req.bits.set(6,4) & request.bits.set(2,0)) === 0.U, // for tltest
-    // (io.b_req.bits.set(11,6) & request.bits.set(5,0)) === 0.U,
+    // (io.b_req.bits.set(6,4) & request.bits.set(2,0)) === 0.U, // for tltest
+    (io.b_req.bits.set(11,6) & request.bits.set(5,0)) === 0.U,
     true.B,
     false.B)
   c_mshr_allocSampleSets.valid := (nestC_valid || tmpC_valid) && dirRead.ready
   c_mshr_allocSampleSets.bits := Mux(
-    (io.c_req.bits.set(6,4) & request.bits.set(2,0)) === 0.U, // for tltest
-    // (io.c_req.bits.set(11,6) & request.bits.set(5,0)) === 0.U,
+    // (io.c_req.bits.set(6,4) & request.bits.set(2,0)) === 0.U, // for tltest
+    (io.c_req.bits.set(11,6) & request.bits.set(5,0)) === 0.U,
     true.B,
     false.B)
 

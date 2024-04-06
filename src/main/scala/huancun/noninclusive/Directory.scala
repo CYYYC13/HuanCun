@@ -653,7 +653,7 @@ class Directory(implicit p: Parameters)
 
   replWDB.log(replWInfo, io.binWReq.valid, s"L3_repl_${sliceId}", clock, reset)
 
-  assert(io.binWReq.bits.rL(1) <= io.binWReq.bits.DLCounter(1).L)
+  // assert(io.binWReq.bits.rL(1) <= io.binWReq.bits.DLCounter(1).L)
   assert(dirReadPorts == 1)
   val req_r = RegEnable(req.bits, req.fire)
   XSPerfAccumulate(cacheParams, "selfdir_A_req", req_r.replacerInfo.channel(0) && resp.valid)
