@@ -291,8 +291,9 @@ class MSHR()(implicit p: Parameters) extends BaseMSHR[DirResult, SelfDirWrite, S
   val max_DL = ParallelMax(DL)
   val min_DL = ParallelMin(DL)
   val DL_UC = binCounter(1).D_L + binCounter(2).D_L + binCounter(3).D_L + binCounter(5).D_L + binCounter(6).D_L + binCounter(7).D_L
-  val bypass = ((binCounter(binNumber).D_L >= ((max_DL + min_DL) / 2.U)) && (binCounter(binNumber).L <= ((max_L + min_L) / 2.U))) ||
-    (binCounter(binNumber).D_L >= ((DL_UC - DL_UC >> 2.U).asTypeOf(DL_UC)))
+//  val bypass = ((binCounter(binNumber).D_L >= ((max_DL + min_DL) / 2.U)) && (binCounter(binNumber).L <= ((max_L + min_L) / 2.U))) ||
+//    (binCounter(binNumber).D_L >= ((DL_UC - DL_UC >> 2.U).asTypeOf(DL_UC)))
+  val bypass  = false.B
 
   def onCReq(): Unit = {
     // Release / ReleaseData
@@ -610,42 +611,27 @@ class MSHR()(implicit p: Parameters) extends BaseMSHR[DirResult, SelfDirWrite, S
 
     new_self_meta.repl_msg.zipWithIndex.foreach {
       case (m, i) =>
-        m.age := Mux(
-          onA_req_setProbe(),
-          Mux( // will write selftag (will update age)
-            self_meta.way === i.U,
-            Mux( // update the new data's age
-              req.tripCount > 0.U,
-              3.U,
-              Mux(req.tripCount === 0.U &&
-                req.useCount > 0.U &&
-                binCounter(binNumber).D_L > 3.U * binCounter(binNumber).L
-                // L < 3/4 L_sum
-                && (binCounter(resp_binNumber).L < (binCounter(resp_binNumber).L_sum - (binCounter(resp_binNumber).L_sum >> 2.U).asTypeOf(binCounter(resp_binNumber).L_sum))),
-                0.U,
-                1.U
-              )
-            ),
-            Mux( // update other ways' age
-              self_meta.repl_msg(i).age >= self_meta.oldAge.age,
-              self_meta.repl_msg(i).age - self_meta.oldAge.age,
-              0.U
-            )
-          ),
+        m.age :=
           Mux(
-            self_meta.hit,
-            Mux( // will write selftag (will update age)
-              self_meta.way === i.U,
+            self_meta.way === i.U,
+            Mux(
+              self_meta.hit,
               3.U,
-//              Mux( // update other ways' age
-//                self_meta.repl_msg(i).age >= self_meta.oldAge.age,
-//                self_meta.repl_msg(i).age - self_meta.oldAge.age,
-//                0.U
-//              )
-              self_meta.repl_msg(i).age
+              Mux(preferCache, 0.U, self_meta.repl_msg(i).age)
             ),
-            self_meta.repl_msg(i).age
-          )
+            Mux(
+              self_meta.hit,
+              self_meta.repl_msg(i).age,
+              Mux(
+                !preferCache,
+                self_meta.repl_msg(i).age,
+                Mux( // update other ways' age
+                  self_meta.repl_msg(i).age >= self_meta.oldAge.age,
+                  self_meta.repl_msg(i).age - self_meta.oldAge.age,
+                  0.U
+                )
+              )
+            )
         )
     }
 
@@ -698,8 +684,8 @@ class MSHR()(implicit p: Parameters) extends BaseMSHR[DirResult, SelfDirWrite, S
 //      )
 //    )
 
-    new_self_meta.tripCount := self_meta.tripCount
-    new_self_meta.useCount := self_meta.useCount
+    new_self_meta.tripCount := Mux(self_meta.hit, self_meta.tripCount, 0.U)
+    new_self_meta.useCount := Mux(self_meta.hit, self_meta.useCount, 1.U)
 
     // L updates when:
     // a block insamplesets is hit, L + 1
@@ -708,16 +694,20 @@ class MSHR()(implicit p: Parameters) extends BaseMSHR[DirResult, SelfDirWrite, S
     new_binCounter.zipWithIndex.foreach {
       case(m, i) =>
         m.L := Mux(
-          self_meta.hit && ((self_meta.tripCount * 4.U + self_meta.useCount) === i.U),
-          binCounter(i).L + 1.U,
+          (self_meta.tripCount * 4.U + self_meta.useCount) === i.U,
+          Mux(self_meta.hit, binCounter(i).L + 1.U, binCounter(i).L),
           binCounter(i).L
         )
         m.D_L := Mux(
-          self_meta.hit && ((self_meta.tripCount * 4.U + self_meta.useCount) === i.U),
+          (self_meta.tripCount * 4.U + self_meta.useCount) === i.U,
           Mux(
-            binCounter(i).D_L > 1.U,
-            binCounter(i).D_L - 2.U,
-            0.U
+            self_meta.hit,
+            Mux(
+              binCounter(i).D_L > 1.U,
+              binCounter(i).D_L - 2.U,
+              0.U
+            ),
+            binCounter(i).D_L + 1.U
           ),
           binCounter(i).D_L
         )
@@ -1060,12 +1050,20 @@ class MSHR()(implicit p: Parameters) extends BaseMSHR[DirResult, SelfDirWrite, S
     // A channel requests
     // TODO: consider parameterized write-through policy for put/atomics
     s_execute := req.opcode === Hint
-    when(self_meta.hit) {
+    when(self_meta.hit && req_acquire) {
       s_wbage := false.B
     }
-    when(self_meta.hit && isSampleSets && isSampleSets_valid) {
+    when(!self_meta.hit && preferCache && req_acquire) {
+      s_wbage := false.B
+    }
+
+    when(self_meta.hit && isSampleSets && isSampleSets_valid && req_acquire) {
       s_wbbincounter := false.B
     }
+    when(!self_meta.hit && preferCache && isSampleSets && isSampleSets_valid && req_acquire) {
+      s_wbbincounter := false.B
+    }
+
     when(!self_meta.hit && self_meta.state =/= INVALID && replace_need_release &&
       (
         (preferCache && (req.opcode === AcquireBlock || req.opcode === Get)) ||
@@ -1557,7 +1555,8 @@ class MSHR()(implicit p: Parameters) extends BaseMSHR[DirResult, SelfDirWrite, S
     }.otherwise{
       od.hitLevelL3toL2 := 0.U
     }
-
+  od.tripCount := Mux(self_meta.hit, self_meta.tripCount, 0.U)
+  od.useCount := Mux(self_meta.hit, self_meta.useCount, 0.U)
 
   oe.sink := sink
 

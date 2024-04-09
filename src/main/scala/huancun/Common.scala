@@ -69,6 +69,8 @@ class SourceDReq(implicit p: Parameters) extends InnerTask with HasChannelBits {
   val bypassPut = Bool()
   val dirty = Bool()
   val hitLevelL3toL2 = UInt(2.W)
+  val tripCount = UInt(1.W)
+  val useCount = UInt(2.W)
 }
 
 class SourceAReq(implicit p: Parameters) extends HuanCunBundle {
