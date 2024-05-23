@@ -72,6 +72,9 @@ case object DirtyKey extends ControlKey[Bool](name = "blockisdirty")
 
 case class DirtyField() extends BundleField[Bool](DirtyKey, Output(Bool()), _ := true.B)
 
+case object UCKey extends ControlKey[UInt]("uc")
+case class UCField() extends BundleField[UInt](UCKey, Output(UInt(2.W)), _ := 0.U(2.W))
+
 case class CacheCtrl
 (
   address: BigInt,
@@ -88,7 +91,7 @@ case class HCCacheParameters
   sets: Int = 128,
   blockBytes: Int = 64,
   pageBytes: Int = 4096,
-  replacement: String = "plru",
+  replacement: String = "tubins",
   mshrs: Int = 14,
   dirReadPorts: Int = 1,
   dirReg: Boolean = true,
@@ -107,7 +110,7 @@ case class HCCacheParameters
   echoField: Seq[BundleFieldBase] = Nil,
   reqField: Seq[BundleFieldBase] = Nil, // master
   respKey: Seq[BundleKeyBase] = Nil,
-  reqKey: Seq[BundleKeyBase] = Seq(PrefetchKey, PreferCacheKey, AliasKey, ReqSourceKey), // slave
+  reqKey: Seq[BundleKeyBase] = Seq(PrefetchKey, PreferCacheKey, AliasKey, ReqSourceKey, UCKey), // slave
   respField: Seq[BundleFieldBase] = Nil,
   ctrl: Option[CacheCtrl] = None,
   sramClkDivBy2: Boolean = false,

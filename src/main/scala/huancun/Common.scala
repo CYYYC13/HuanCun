@@ -160,6 +160,7 @@ class MSHRRequest(implicit p: Parameters) extends HuanCunBundle with HasChannelB
   val fromCmoHelper = Bool()
   val needProbeAckData = if (cacheParams.inclusive) None else Some(Bool())
   val reqSource = UInt(MemReqSource.reqSourceBits.W)
+  val UC = UInt(2.W)
 }
 
 class MSHRStatus(implicit p: Parameters) extends HuanCunBundle with HasChannelBits {
@@ -217,6 +218,7 @@ class ReplacerInfo() extends Bundle {
   val channel = UInt(3.W)
   val opcode = UInt(3.W)
   val reqSource = UInt(MemReqSource.reqSourceBits.W)
+  val UC = UInt(2.W)
 }
 
 class PutBufferPop(implicit p: Parameters) extends HuanCunBundle {

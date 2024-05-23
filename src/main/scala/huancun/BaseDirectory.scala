@@ -105,6 +105,10 @@ class SubDirectory[T <: Data](
   val resetFinish = RegInit(false.B)
   val resetIdx = RegInit((sets - 1).U)
   val metaArray = Module(new SRAMTemplate(chiselTypeOf(dir_init), sets, ways, singlePort = true, input_clk_div_by_2 = clk_div_by_2))
+  val binArray = Module(new SRAMTemplate(UInt(40.W), 1, 16, singlePort = true, shouldReset = true)) //29-15:D;14-0:L
+  val TCUCArray = Module(new SRAMTemplate(UInt(4.W), sets, ways, singlePort = true, shouldReset = true))
+  val binRead = Wire(Vec(16, UInt(40.W)))
+  val TCUCRead = Wire(Vec(ways, UInt(4.W)))
 
   val clkGate = Module(new STD_CLKGT_func)
   val clk_en = RegInit(false.B)
@@ -116,7 +120,10 @@ class SubDirectory[T <: Data](
 
   val tag_wen = io.tag_w.valid
   val dir_wen = io.dir_w.valid
-  val replacer_wen = RegInit(false.B)
+  val replacer_wen_old = RegInit(false.B)
+  val replacer_wen = WireInit(false.B)
+  val binWen = WireInit(false.B)
+  val tcucWen = WireInit(false.B)
   io.tag_w.ready := true.B
   io.dir_w.ready := true.B
   io.read.ready := !tag_wen && !dir_wen && !replacer_wen && resetFinish
@@ -158,8 +165,12 @@ class SubDirectory[T <: Data](
     tagArray.clock := masked_clock
   }
 
-  val reqReg = RegEnable(io.read.bits, io.read.fire)
   val reqValidReg = RegInit(false.B)
+  val reqReg = RegEnable(io.read.bits, io.read.fire)
+  val req_s1 = RegNext(reqReg)
+  val req_s2 = RegEnable(req_s1, reqValidReg)
+  val reqSource = req_s2.replacerInfo.reqSource
+  val req_prefetch = (reqSource === 5.U || reqSource === 6.U || reqSource === 8.U || reqSource === 9.U || reqSource === 10.U || reqSource === 11.U || reqSource === 12.U || reqSource === 13.U || reqSource === 14.U)
   if (clk_div_by_2) {
     reqValidReg := RegNext(io.read.fire)
   } else {
@@ -170,20 +181,10 @@ class SubDirectory[T <: Data](
   val way_s1 = Wire(UInt(wayBits.W))
 
   val repl = ReplacementPolicy.fromString(replacement, ways)
-  val repl_state = if(replacement == "random"){
-    when(io.tag_w.fire){
-      repl.miss
-    }
-    0.U
-  } else {
-    val replacer_sram = Module(new SRAMTemplate(UInt(repl.nBits.W), sets, singlePort = true, shouldReset = true))
-    val repl_sram_r = replacer_sram.io.r(io.read.fire, io.read.bits.set).resp.data(0)
-    val repl_state_hold = WireInit(0.U(repl.nBits.W))
-    repl_state_hold := HoldUnless(repl_sram_r, RegNext(io.read.fire, false.B))
-    val next_state = repl.get_next_state(repl_state_hold, way_s1)
-    replacer_sram.io.w(replacer_wen, RegNext(next_state), RegNext(reqReg.set), 1.U)
-    repl_state_hold
-  }
+  val replaceWay = WireInit(UInt(wayBits.W), 0.U)
+  val random_repl = replacement == "random"
+  val replacer_sram = if (random_repl) None else
+    Some(Module(new SRAMTemplate(UInt(repl.nBits.W), sets, 1, singlePort = true, shouldReset = true)))
 
   io.resp.valid := reqValidReg
   val metas = metaArray.io.r(io.read.fire, io.read.bits.set).resp.data
@@ -191,7 +192,6 @@ class SubDirectory[T <: Data](
   val metaValidVec = metas.map(dir_hit_fn)
   val hitVec = tagMatchVec.zip(metaValidVec).map(x => x._1 && x._2)
   val hitWay = OHToUInt(hitVec)
-  val replaceWay = repl.get_replace_way(repl_state)
   val (inv, invalidWay) = invalid_way_sel(metas, replaceWay)
   val chosenWay = Mux(inv, invalidWay, replaceWay)
 
@@ -226,6 +226,142 @@ class SubDirectory[T <: Data](
     Mux(resetFinish, io.dir_w.bits.set, resetIdx),
     Mux(resetFinish, UIntToOH(io.dir_w.bits.way), Fill(ways, true.B))
   )
+
+  /* ======!! Replacement logic !!====== */
+  /* ====== Read, choose replaceWay ====== */
+  val repl_state = if (replacement == "random") {
+    when(io.tag_w.fire) {
+      repl.miss
+    }
+    0.U
+  } else if (replacement == "tubins") {
+    val repl_sram_r = replacer_sram.get.io.r(io.read.fire, io.read.bits.set).resp.data(0)
+    val repl_state_hold = WireInit(0.U(repl.nBits.W))
+    repl_state_hold := HoldUnless(repl_sram_r, RegNext(io.read.fire, false.B))
+    repl_state_hold
+  } else {  // plru
+    val repl_sram_r = replacer_sram.get.io.r(io.read.fire, io.read.bits.set).resp.data(0)
+    val repl_state_hold = WireInit(0.U(repl.nBits.W))
+    repl_state_hold := HoldUnless(repl_sram_r, RegNext(io.read.fire, false.B))
+
+    repl_state_hold
+  }
+
+  replaceWay := repl.get_replace_way(repl_state)
+
+  /* ====== Update ====== */
+  // PLRU: update replacer only when releaseData or Hint, at stage 2
+  // TUBINS:  update replacer when when A hit or C req, at stage 2
+  val updateAHit = reqValidReg && req_s1.replacerInfo.channel(0) && hit_s1 &&(req_s1.replacerInfo.opcode === TLMessages.AcquireBlock || req_s1.replacerInfo.opcode === TLMessages.AcquirePerm || req_s1.replacerInfo.opcode === TLMessages.Hint)
+  val updateC = reqValidReg && req_s1.replacerInfo.channel(2) && (req_s1.replacerInfo.opcode === TLMessages.ReleaseData || req_s1.replacerInfo.opcode === TLMessages.Release)
+
+  replacer_wen := RegNext(updateAHit) || RegNext(updateC)
+
+  // TCUC R/W for TUBINS
+  TCUCRead := TCUCArray.io.r(io.read.fire, io.read.bits.set).resp.data
+  val TCUCAll_s2 = RegEnable(TCUCRead, 0.U.asTypeOf(TCUCRead), reqValidReg)
+  val TCUC_s2 = TCUCAll_s2(way_s2)
+  val TC_s2 = WireInit(0.U(2.W))
+  TC_s2 := TCUC_s2(3, 2)
+  val UC_s2 = WireInit(0.U(2.W))
+  UC_s2 := TCUC_s2(1, 0)
+  tcucWen := updateAHit || updateC
+  val new_TC = WireInit(0.U(2.W))
+  new_TC := Mux(hit_s2 && req_s2.replacerInfo.channel(0) && (req_s2.replacerInfo.opcode === TLMessages.AcquirePerm || req_s2.replacerInfo.opcode === TLMessages.AcquireBlock), Mux(TC_s2 === 3.U, 3.U, TC_s2 + 1.U),
+    Mux(!hit_s2 && req_s2.replacerInfo.channel(2) && (req_s2.replacerInfo.opcode === TLMessages.Release || req_s2.replacerInfo.opcode === TLMessages.ReleaseData), 1.U, TC_s2))
+  val new_UC = WireInit(0.U(2.W))
+  new_UC := Mux(req_s2.replacerInfo.channel(2) && (req_s2.replacerInfo.opcode === TLMessages.Release || req_s2.replacerInfo.opcode === TLMessages.ReleaseData), req_s2.replacerInfo.UC, UC_s2)
+  val new_TCUC = Cat(new_TC, new_UC)
+  val TCUC_init = Wire(Vec(ways, UInt(4.W)))
+  TCUC_init.foreach(_ := 0.U(4.W))
+  TCUCArray.io.w(
+    !resetFinish || tcucWen,
+    Mux(resetFinish, new_TCUC, TCUC_init.asUInt),
+    Mux(resetFinish, req_s2.set, resetIdx),
+    Mux(resetFinish, UIntToOH(way_s1), Fill(ways, true.B))
+  )
+
+  // Bin R/W for TUBINS
+  val new_TCUC_s2 = WireInit(0.U(4.W))
+  new_TCUC_s2 := Mux(req_s2.replacerInfo.channel(2) && (req_s2.replacerInfo.opcode === TLMessages.Release || req_s2.replacerInfo.opcode === TLMessages.ReleaseData), 4.U * new_TC + new_UC, 4.U * TC_s2 + UC_s2)
+  val isSampleSets = Mux((req_s2.set(9, 5) + req_s2.set(4, 0)) === 31.U, true.B, false.B) // choose 64 sample from 4096 sets
+  binWen := (updateAHit || updateC) && isSampleSets
+  binRead := binArray.io.r(io.read.fire, 0.U).resp.data
+  val binDL_all_s2 = RegEnable(binRead, 0.U.asTypeOf(binRead), reqValidReg)
+  val Lvec = Wire(Vec(16, UInt(20.W)))
+  val Dvec = Wire(Vec(16, UInt(20.W)))
+  Lvec.zipWithIndex.foreach {
+    case (m, i) =>
+      m := binDL_all_s2(i)(19, 0)
+  }
+  Dvec.zipWithIndex.foreach {
+    case (m, i) =>
+      m := binDL_all_s2(i)(39, 20)
+  }
+  val binDL = binDL_all_s2(new_TCUC_s2)
+  val sumL = binDL_all_s2(1)(19, 0) + binDL_all_s2(2)(19, 0) + binDL_all_s2(3)(19, 0) + binDL_all_s2(5)(19, 0) + binDL_all_s2(6)(19, 0) + binDL_all_s2(7)(19, 0) +
+    binDL_all_s2(9)(19, 0) + binDL_all_s2(10)(19, 0) + binDL_all_s2(11)(19, 0) + binDL_all_s2(13)(19, 0) + binDL_all_s2(14)(19, 0) + binDL_all_s2(15)(19, 0)
+  val maxL = Lvec.reduce((a, b) => Mux(a > b, a, b))
+  val minL = Lvec.reduce((a, b) => Mux(a < b, a, b))
+  val maxD = Dvec.reduce((a, b) => Mux(a > b, a, b))
+  val minD = Dvec.reduce((a, b) => Mux(a < b, a, b))
+  val binD = binDL(39, 20)
+  val binL = binDL(19, 0)
+  val new_binD = WireInit(0.U(20.W))
+  new_binD := Mux(isSampleSets, Mux(hit_s2 && req_s2.replacerInfo.channel(0) && (req_s2.replacerInfo.opcode === TLMessages.AcquirePerm || req_s2.replacerInfo.opcode === TLMessages.AcquireBlock),
+    Mux(binD >= 2.U, binD - 2.U, 0.U),
+    Mux(req_s2.replacerInfo.channel(2) && (req_s2.replacerInfo.opcode === TLMessages.Release || req_s2.replacerInfo.opcode === TLMessages.ReleaseData), binD + 1.U,
+      Mux(req_prefetch, Mux(binD >= 1.U, binD - 1.U, 0.U), binD))), binD)
+  val new_binL = WireInit(0.U(20.W))
+  new_binL := Mux(isSampleSets, Mux(hit_s2 && req_s2.replacerInfo.channel(0) && (req_s2.replacerInfo.opcode === TLMessages.AcquirePerm || req_s2.replacerInfo.opcode === TLMessages.AcquireBlock),
+    binL + 1.U, binL), binL)
+  val new_binDL = Cat(new_binD, new_binL)
+  val binDL_init = Wire(Vec(16, UInt(40.W)))
+  binDL_init.foreach(_ := 0.U(40.W))
+  binArray.io.w(
+    !resetFinish || binWen,
+    Mux(resetFinish, new_binDL, binDL_init.asUInt),
+    0.U,
+    Mux(resetFinish, UIntToOH(new_TCUC_s2), Fill(16, true.B))
+  )
+
+  if(replacement == "tubins"){
+    // req_type[2]: release(1); req_type[1]: acq(1), hint(0); req_type[0]: hit(1), miss(0)
+    // 101: release hit
+    // 100: release miss
+    // 011: acq_hit
+    // 001: hint_hit
+    // 010: acq_miss(do not update age)
+    // 000: hint_miss(do not update age)
+    val req_type = WireInit(0.U(3.W))
+    req_type := Mux(!hit_s2 && req_s2.replacerInfo.channel(2) && (req_s2.replacerInfo.opcode === TLMessages.ReleaseData || req_s2.replacerInfo.opcode === TLMessages.Release), 5.U,
+      Mux(hit_s2 && req_s2.replacerInfo.channel(2) && (req_s2.replacerInfo.opcode === TLMessages.ReleaseData || req_s2.replacerInfo.opcode === TLMessages.Release), 4.U,
+      Mux(hit_s2 && req_s2.replacerInfo.channel(0) && (req_s2.replacerInfo.opcode === TLMessages.AcquireBlock || req_s2.replacerInfo.opcode === TLMessages.AcquirePerm), 3.U,
+        Mux(hit_s2 && req_prefetch, 1.U,
+          Mux(!hit_s2 && req_s2.replacerInfo.channel(0), 2.U,
+            Mux(!hit_s2 && req_prefetch, 0.U, 7.U))))))
+    //    override def get_next_state(state: UInt, touch_way: UInt, req_type: UInt, TC: UInt, UC: UInt, binD: Vec[UInt], binL: Vec[UInt]): UInt = {
+    //    val next_state_s3 = repl.get_next_state(repl_state_s3, touch_way_s3, req_type, new_TC, new_UC, binD, binL, sumL, maxL, minL, maxD, minD)
+    val next_state_s2 = repl.get_next_state(repl_state, way_s2, inv, req_type, new_TC, new_UC, new_binD, new_binL, sumL)
+    val repl_init = Wire(Vec(ways, UInt(2.W)))
+    repl_init.foreach(_ := 3.U(2.W))
+    replacer_sram.get.io.w(
+      !resetFinish || replacer_wen,
+      Mux(resetFinish, next_state_s2, repl_init.asUInt),
+      Mux(resetFinish, req_s2.set, resetIdx),
+      1.U
+    )
+  } else if(replacement == "plru") {
+    val next_state = repl.get_next_state(repl_state, way_s1)
+    replacer_sram.get.io.w(
+      !resetFinish ||  replacer_wen_old,
+      Mux(resetFinish,  RegNext(next_state), 0.U),
+      Mux(resetFinish,  RegNext(reqReg.set), resetIdx),
+      1.U)
+  } else {
+
+  }
+
 
   val cycleCnt = Counter(true.B, 2)
   val resetMask = if (clk_div_by_2) cycleCnt._1(0) else true.B
@@ -271,8 +407,8 @@ abstract class SubDirectoryDoUpdate[T <: Data](
 
   val update = doUpdate(reqReg.replacerInfo)
   when(reqValidReg && update) {
-    replacer_wen := true.B
+    replacer_wen_old := true.B
   }.otherwise {
-    replacer_wen := false.B
+    replacer_wen_old := false.B
   }
 }
