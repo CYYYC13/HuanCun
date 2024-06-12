@@ -875,7 +875,7 @@ class MSHR()(implicit p: Parameters) extends BaseMSHR[DirResult, SelfDirWrite, S
     })
   }
 
-  when(io_releaseThrough && io.dirResult.valid && req.fromC) {
+  when((io_releaseThrough || (io.dirResult.bits.self.bypass && !io.dirResult.bits.self.hit)) && io.dirResult.valid && req.fromC) {
     assert(req_valid)
     // TtoN or BtoN should release through
     will_release_through := !other_clients_hit && isShrink(req.param)
@@ -1177,6 +1177,7 @@ class MSHR()(implicit p: Parameters) extends BaseMSHR[DirResult, SelfDirWrite, S
   od.isHit := self_meta.hit
   od.bufIdx := req.bufIdx
   od.bypassPut := bypassPut_latch
+  od.TC := self_meta.TC
 
   oe.sink := sink
 

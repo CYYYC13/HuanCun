@@ -38,6 +38,7 @@ class DirResult(implicit p: Parameters) extends DirectoryEntry with BaseDirResul
 
 class DirectoryIO(implicit p: Parameters) extends BaseDirectoryIO[DirResult, DirWrite, TagWrite] {
   val read = Flipped(DecoupledIO(new DirRead))
+  val sliceId = Input(UInt(2.W))
   val result = ValidIO(new DirResult)
   val dirWReq = Flipped(DecoupledIO(new DirWrite))
   val tagWReq = Flipped(DecoupledIO(new TagWrite))

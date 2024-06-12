@@ -8,7 +8,7 @@ import huancun.MetaData._
 import huancun._
 import huancun.debug.{DirectoryLogger, TypeId}
 import huancun.utils._
-import utility.{ParallelMax, ParallelPriorityMux}
+import utility.{ChiselDB, ParallelMax, ParallelPriorityMux}
 
 trait HasClientInfo { this: HasHuanCunParameters =>
   // assume all clients have same params
@@ -21,6 +21,28 @@ trait HasClientInfo { this: HasHuanCunParameters =>
   val clientSetBits = log2Ceil(clientSets)
   val clientWayBits = log2Ceil(clientWays)
   val clientTagBits = addressBits - clientSetBits - offsetBits
+}
+
+class replBundle(implicit p: Parameters) extends HuanCunBundle {
+  val channel = UInt(3.W)
+  val opcode = UInt(3.W)
+  //val addr = UInt((tagBits + setBits).W)
+  val tag = UInt(tagBits.W)
+  val sset = UInt(setBits.W)  //'set' is C++ common word, use 'sset' instead
+  val bank = UInt(2.W)
+  val way_s2 = UInt(wayBits.W)
+  val TC = UInt(2.W)
+  val UC = UInt(2.W)
+  val Dvec = Vec(16, UInt(20.W))
+  val Lvec = Vec(16, UInt(20.W))
+  val DLvec = Vec(16, UInt(20.W))
+  val DLcond1 = UInt(1.W)
+  val DLcond2 = UInt(1.W)
+  val DLcond3 = UInt(1.W)
+  val hit = UInt(1.W)
+  val isSample = UInt(1.W)
+  val repl_state = UInt(32.W)
+  val next_state = UInt(32.W)
 }
 
 class SelfDirEntry(implicit p: Parameters) extends HuanCunBundle {
@@ -40,6 +62,8 @@ class SelfDirResult(implicit p: Parameters) extends SelfDirEntry {
   val way = UInt(wayBits.W)
   val tag = UInt(tagBits.W)
   val error = Bool()
+  val bypass = Bool()
+  val TC = UInt(2.W)
 }
 
 class ClientDirResult(implicit p: Parameters) extends HuanCunBundle with HasClientInfo {
@@ -110,6 +134,7 @@ trait NonInclusiveCacheReplacerUpdate { this: HasUpdate =>
 
 class DirectoryIO(implicit p: Parameters) extends BaseDirectoryIO[DirResult, SelfDirWrite, SelfTagWrite] {
   val read = Flipped(DecoupledIO(new DirRead))
+  val sliceId = Input(UInt(2.W))
   val result = ValidIO(new DirResult)
   val dirWReq = Flipped(DecoupledIO(new SelfDirWrite))
   val tagWReq = Flipped(DecoupledIO(new SelfTagWrite))
@@ -124,6 +149,9 @@ class Directory(implicit p: Parameters)
 
   val stamp = GTimer()
   val selfDirW = io.dirWReq
+  val sliceId = WireInit(0.U)
+  sliceId := io.sliceId
+  dontTouch(sliceId)
   // dump self dir
   DirectoryLogger(cacheParams.name, TypeId.self_dir)(
     selfDirW.bits.set,
@@ -277,6 +305,8 @@ class Directory(implicit p: Parameters)
   resp.bits.self.error := selfResp.bits.error
   resp.bits.self.clientStates := selfResp.bits.dir.clientStates
   resp.bits.self.prefetch.foreach(p => p := selfResp.bits.dir.prefetch.get)
+  resp.bits.self.bypass := selfResp.bits.bypass
+  resp.bits.self.TC := selfResp.bits.TC
   resp.bits.clients.way := clientResp.bits.way
   resp.bits.clients.tag := clientResp.bits.tag
   resp.bits.clients.error := Cat(resp.bits.clients.states.map(_.hit)).orR && clientResp.bits.error
@@ -313,6 +343,41 @@ class Directory(implicit p: Parameters)
   clientDir.io.dir_w.bits.way := io.clientDirWReq.bits.way
   clientDir.io.dir_w.bits.dir := io.clientDirWReq.bits.data
   io.clientDirWReq.ready := clientDir.io.dir_w.ready && readyMask
+
+  val replDB = ChiselDB.createTable("l3_repl_Dir", new replBundle(), basicDB = true)
+  val replInfo = Wire(new replBundle())
+  replInfo.channel := selfResp.bits.channel
+  replInfo.opcode := selfResp.bits.opcode
+  replInfo.tag := selfResp.bits.tag
+  replInfo.sset := selfResp.bits.set
+  replInfo.bank := io.sliceId
+  replInfo.way_s2 := selfResp.bits.way
+  replInfo.TC := selfResp.bits.TC
+  replInfo.UC := selfResp.bits.UC
+  replInfo.Lvec.zipWithIndex.foreach {
+    case(m, i) =>
+      m := selfResp.bits.Lvec(i)
+  }
+  replInfo.Dvec.zipWithIndex.foreach {
+    case (m, i) =>
+      m := selfResp.bits.Dvec(i)
+  }
+  replInfo.DLvec.zipWithIndex.foreach {
+    case (m, i) =>
+      m := selfResp.bits.DLvec(i)
+  }
+  replInfo.DLcond1 := Mux(selfResp.bits.DLcond1, 1.U, 0.U)
+  replInfo.DLcond2 := Mux(selfResp.bits.DLcond2, 1.U, 0.U)
+  replInfo.DLcond3 := Mux(selfResp.bits.DLcond3, 1.U, 0.U)
+  replInfo.hit := Mux(selfResp.bits.hit, 1.U, 0.U)
+  replInfo.isSample := Mux(selfResp.bits.isSample, 1.U, 0.U)
+  replInfo.repl_state := selfResp.bits.repl_state
+  replInfo.next_state := selfResp.bits.next_state
+  replDB.log(replInfo, RegNext(io.result.valid), s"L3_repl_${sliceId}", clock, reset)
+
+
+
+
 
   assert(dirReadPorts == 1)
   val req_r = RegEnable(req.bits, req.fire)

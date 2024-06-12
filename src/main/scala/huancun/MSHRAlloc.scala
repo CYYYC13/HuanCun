@@ -171,7 +171,9 @@ class MSHRAlloc(implicit p: Parameters) extends HuanCunModule {
   dirRead.bits.replacerInfo.channel := request.bits.channel
   dirRead.bits.replacerInfo.opcode := request.bits.opcode
   dirRead.bits.replacerInfo.reqSource := request.bits.reqSource
+  dirRead.bits.replacerInfo.preferCache := request.bits.preferCache
   dirRead.bits.replacerInfo.UC := request.bits.UC
+  dirRead.bits.replacerInfo.TC := request.bits.TC
   dirRead.bits.wayMode := false.B
   dirRead.bits.way := DontCare
 

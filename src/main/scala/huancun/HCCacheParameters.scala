@@ -75,6 +75,9 @@ case class DirtyField() extends BundleField[Bool](DirtyKey, Output(Bool()), _ :=
 case object UCKey extends ControlKey[UInt]("uc")
 case class UCField() extends BundleField[UInt](UCKey, Output(UInt(2.W)), _ := 0.U(2.W))
 
+case object TCKey extends ControlKey[UInt]("tc")
+case class TCField() extends BundleField[UInt](TCKey, Output(UInt(2.W)), _ := 0.U(2.W))
+
 case class CacheCtrl
 (
   address: BigInt,

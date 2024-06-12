@@ -69,6 +69,7 @@ class SourceDReq(implicit p: Parameters) extends InnerTask with HasChannelBits {
   val bypassPut = Bool()
   val dirty = Bool()
   val isHit = Bool()
+  val TC = UInt(2.W)
 }
 
 class SourceAReq(implicit p: Parameters) extends HuanCunBundle {
@@ -161,6 +162,7 @@ class MSHRRequest(implicit p: Parameters) extends HuanCunBundle with HasChannelB
   val needProbeAckData = if (cacheParams.inclusive) None else Some(Bool())
   val reqSource = UInt(MemReqSource.reqSourceBits.W)
   val UC = UInt(2.W)
+  val TC = UInt(2.W)
 }
 
 class MSHRStatus(implicit p: Parameters) extends HuanCunBundle with HasChannelBits {
@@ -219,6 +221,8 @@ class ReplacerInfo() extends Bundle {
   val opcode = UInt(3.W)
   val reqSource = UInt(MemReqSource.reqSourceBits.W)
   val UC = UInt(2.W)
+  val TC = UInt(2.W)
+  val preferCache = Bool()
 }
 
 class PutBufferPop(implicit p: Parameters) extends HuanCunBundle {

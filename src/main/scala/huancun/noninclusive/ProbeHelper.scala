@@ -52,6 +52,7 @@ class ProbeHelper(entries: Int = 5, enqDelay: Int = 1)(implicit p: Parameters)
   req.fromCmoHelper := false.B
   req.reqSource := MemReqSource.NoWhere.id.U
   req.UC := 0.U // ignored
+  req.TC := 0.U // ignored
 
   val client_dir = dir.clients.states(req_client)
   val dir_conflict = !dir.clients.tag_match && Cat(

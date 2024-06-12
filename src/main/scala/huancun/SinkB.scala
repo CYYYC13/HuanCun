@@ -58,4 +58,5 @@ class SinkB(edge: TLEdgeOut)(implicit p: Parameters) extends HuanCunModule {
   io.alloc.bits.needProbeAckData.foreach(_ := io.b.bits.data(0))
   io.alloc.bits.reqSource := MemReqSource.NoWhere.id.U // Ignore
   io.alloc.bits.UC := 0.U // ignore
+  io.alloc.bits.TC := 0.U // ignore
 }

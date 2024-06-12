@@ -161,6 +161,7 @@ class SourceD(implicit p: Parameters) extends HuanCunModule {
   s2_d.bits.data := s1_queue.io.deq.bits.data
   s2_d.bits.corrupt := s2_d.bits.denied
   s2_d.bits.echo.lift(DirtyKey).foreach(_ := s2_req.dirty)
+  s2_d.bits.echo.lift(TCKey).foreach(_ := s2_req.TC)
   s2_d.bits.user.lift(IsHitKey).foreach(_ := s2_req.isHit)
   dontTouch(s2_d.bits.user)
 
@@ -226,6 +227,7 @@ class SourceD(implicit p: Parameters) extends HuanCunModule {
     (s3_req.opcode =/= TLMessages.AccessAck && s3_req.opcode =/= TLMessages.Grant && s3_queue.io.deq.bits.corrupt)
   s3_d.bits.echo.lift(DirtyKey).foreach(_ := s3_req.dirty)
   s3_d.bits.user.lift(IsHitKey).foreach(_ := s3_req.isHit)
+  s3_d.bits.echo.lift(TCKey).foreach(_ := s3_req.TC)
   dontTouch(s3_d.bits.user)
 
   s3_queue.io.enq.valid := RegNextN(
