@@ -638,6 +638,7 @@ class Slice()(implicit p: Parameters) extends HuanCunModule {
     mshrReq.bits.isHit := true.B
     mshrReq.bits.needProbeAckData.foreach(_ := false.B)
     mshrReq.bits.reqSource := pftReq.bits.pfSource
+    mshrReq.bits.pc := 0.U // ignored
     pftReq.ready := mshrReq.ready
     mshrReq
   }

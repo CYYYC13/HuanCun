@@ -38,6 +38,7 @@ case class CacheParameters
   blockGranularity: Int,
   blockBytes: Int = 64,
   aliasBitsOpt: Option[Int] = None,
+  pcBitsOpt: Option[Int] = None,
   inner: Seq[CacheParameters] = Nil
 ) {
   val capacity = sets * ways * blockBytes
@@ -72,6 +73,11 @@ case object DirtyKey extends ControlKey[Bool](name = "blockisdirty")
 
 case class DirtyField() extends BundleField[Bool](DirtyKey, Output(Bool()), _ := true.B)
 
+// Pass pc of upper level cache
+case object PCKey extends ControlKey[UInt]("pc")
+
+case class PCField(width: Int) extends BundleField[UInt](PCKey, Output(UInt(width.W)), _ := 0.U(width.W))
+
 case class CacheCtrl
 (
   address: BigInt,
@@ -88,7 +94,7 @@ case class HCCacheParameters
   sets: Int = 128,
   blockBytes: Int = 64,
   pageBytes: Int = 4096,
-  replacement: String = "plru",
+  replacement: String = "chrome",
   mshrs: Int = 14,
   dirReadPorts: Int = 1,
   dirReg: Boolean = true,
@@ -107,7 +113,7 @@ case class HCCacheParameters
   echoField: Seq[BundleFieldBase] = Nil,
   reqField: Seq[BundleFieldBase] = Nil, // master
   respKey: Seq[BundleKeyBase] = Nil,
-  reqKey: Seq[BundleKeyBase] = Seq(PrefetchKey, PreferCacheKey, AliasKey, ReqSourceKey), // slave
+  reqKey: Seq[BundleKeyBase] = Seq(PrefetchKey, PreferCacheKey, AliasKey, ReqSourceKey, PCKey), // slave
   respField: Seq[BundleFieldBase] = Nil,
   ctrl: Option[CacheCtrl] = None,
   sramClkDivBy2: Boolean = false,

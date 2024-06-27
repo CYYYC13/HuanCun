@@ -5,7 +5,7 @@ import chisel3.util._
 import org.chipsalliance.cde.config.Parameters
 import freechips.rocketchip.tilelink.{TLBundleC, TLMessages}
 import huancun._
-import utility.MemReqSource
+import utility.{MemReqSource, ReqSourceKey}
 
 class SinkC(implicit p: Parameters) extends BaseSinkC {
 
@@ -77,8 +77,10 @@ class SinkC(implicit p: Parameters) extends BaseSinkC {
   io.alloc.bits.fromProbeHelper := false.B
   io.alloc.bits.fromCmoHelper := false.B
   io.alloc.bits.needProbeAckData.foreach(_ := false.B)
-  io.alloc.bits.reqSource := MemReqSource.NoWhere.id.U // Ignore
-  assert(!io.alloc.fire || c.fire && first, "alloc fire, but c channel not fire!")
+//  io.alloc.bits.reqSource := MemReqSource.NoWhere.id.U // Ignore
+  io.alloc.bits.reqSource := c.bits.user.lift(ReqSourceKey).getOrElse(MemReqSource.NoWhere.id.U)
+  io.alloc.bits.pc := c.bits.user.lift(PCKey).getOrElse(0.U)
+    assert(!io.alloc.fire || c.fire && first, "alloc fire, but c channel not fire!")
 
   io.resp.valid := c.valid && (!noSpace || !first) && isResp
   io.resp.bits.hasData := hasData

@@ -65,6 +65,8 @@ trait HasHuanCunParameters {
 
   val aliasBitsOpt = if(cacheParams.clientCaches.isEmpty) None
     else cacheParams.clientCaches.head.aliasBitsOpt
+  val pcBitsOpt = if (cacheParams.clientCaches.isEmpty) None
+  else cacheParams.clientCaches.head.pcBitsOpt
 
   val bufBlocks = mshrs / 2
   val bufIdxBits = log2Ceil(bufBlocks)

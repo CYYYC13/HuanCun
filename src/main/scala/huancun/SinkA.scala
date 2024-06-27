@@ -106,7 +106,8 @@ class SinkA(implicit p: Parameters) extends HuanCunModule {
   if (cacheParams.level == 2) {
     allocInfo.preferCache := a.bits.user.lift(PreferCacheKey).getOrElse(true.B)
   } else {
-    allocInfo.preferCache := Mux((a.bits.opcode === TLMessages.Get || a.bits.opcode(2,1) === 0.U), true.B, a.bits.user.lift(PreferCacheKey).getOrElse(true.B))
+//    allocInfo.preferCache := Mux((a.bits.opcode === TLMessages.Get || a.bits.opcode(2,1) === 0.U), true.B, a.bits.user.lift(PreferCacheKey).getOrElse(true.B))
+    allocInfo.preferCache := Mux(a.bits.opcode === TLMessages.Hint, true.B, false.B)
   }
   allocInfo.dirty := false.B // ignored
   allocInfo.isHit := true.B // ignored
@@ -114,6 +115,7 @@ class SinkA(implicit p: Parameters) extends HuanCunModule {
   allocInfo.fromCmoHelper := false.B
   allocInfo.needProbeAckData.foreach(_ := false.B)
   allocInfo.reqSource := a.bits.user.lift(utility.ReqSourceKey).getOrElse(MemReqSource.NoWhere.id.U)
+  allocInfo.pc := a.bits.user.lift(huancun.PCKey).getOrElse(0.U)
 
   io.d_pb_pop.ready := beatVals(io.d_pb_pop.bits.bufIdx)(io.d_pb_pop.bits.count)
   io.d_pb_beat := RegEnable(putBuffer(io.d_pb_pop.bits.bufIdx)(io.d_pb_pop.bits.count), io.d_pb_pop.fire)
