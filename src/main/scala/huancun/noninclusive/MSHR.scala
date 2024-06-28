@@ -707,7 +707,8 @@ class MSHR()(implicit p: Parameters) extends BaseMSHR[DirResult, SelfDirWrite, S
   val bypassPut_latch = Keep(bypassPut)
   val bypassPut_all = Mux(io.dirResult.valid, bypassPut, bypassPut_latch)
   // Cache alias will always preferCache to avoid trifle
-  val preferCache = (req.preferCache && !bypassPut_all) || cache_alias
+//  val preferCache = (req.preferCache && !bypassPut_all) || cache_alias
+  val preferCache = (io.dirResult.bits.self.doCache && !bypassPut_all) || cache_alias
   val bypassGet = req.opcode === Get && !preferCache
 
   def set_probe(): Unit = {

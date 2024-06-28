@@ -88,6 +88,9 @@ class SubDirectory[T <: Data](
       val tag = UInt(tagBits.W)
       val dir = dir_init.cloneType
       val error = Bool()
+      val doCache = Bool()
+
+      // for chiseldb
       val channel = UInt(3.W)
       val opcode = UInt(3.W)
       val set = UInt(setBits.W)
@@ -142,7 +145,7 @@ class SubDirectory[T <: Data](
   val tcucWen = WireInit(false.B)
   io.tag_w.ready := true.B
   io.dir_w.ready := true.B
-  io.read.ready := !tag_wen && !dir_wen && !replacer_wen && resetFinish
+  io.read.ready := !tag_wen && !dir_wen && !replacer_wen && resetFinish && !tcucWen && !binWen
 
   def tagCode: Code = Code.fromString(p(HCCacheParamsKey).tagECC)
 
@@ -227,6 +230,7 @@ class SubDirectory[T <: Data](
   val tagAll_s2 = RegEnable(tagRead, reqValidReg)
   val meta_s2 = metaAll_s2(way_s2)
   val tag_s2 = tagAll_s2(way_s2)
+  val inv_s2 = RegEnable(inv, false.B, reqValidReg)
 
   val errorAll_s1 = VecInit(eccRead.zip(tagRead).map{x => tagCode.decode(x._1 ## x._2).error})
   val errorAll_s2 = RegEnable(errorAll_s1, reqValidReg)
@@ -320,7 +324,8 @@ class SubDirectory[T <: Data](
     new_TCUC_s2 := 4.U * new_TC + new_UC
 //    val isSampleSets = Mux((req_s2.set(9, 5) + req_s2.set(4, 0)) === 31.U, true.B, false.B) // choose 64 sample from 4096 sets
 //    val isSampleSets = Mux((req_s2.set(11, 6) + req_s2.set(5, 0)) === 63.U, true.B, false.B) // choose 64 sample from 4096 sets
-  val isSampleSets = Mux((req_s2.set(11, 6) + req_s2.set(5, 0)) > 0.U, true.B, false.B)
+//  val isSampleSets = Mux((req_s2.set(11, 6) + req_s2.set(5, 0)) > 0.U, true.B, false.B)
+    val isSampleSets = Mux(req_s2.set(5, 0) > 0.U, true.B, false.B)
   binWen := (updateAHit || updateC || updateHintMiss) && isSampleSets
     binRead := binArray.io.r(io.read.fire, 0.U).resp.data
 //    val binDL_all_s2 = RegEnable(binRead, 0.U.asTypeOf(binRead), reqValidReg)
@@ -413,7 +418,7 @@ class SubDirectory[T <: Data](
             Mux(!hit_s2 && req_prefetch && req_s2.replacerInfo.preferCache, 0.U, 7.U))))))
     //    override def get_next_state(state: UInt, touch_way: UInt, req_type: UInt, TC: UInt, UC: UInt, binD: Vec[UInt], binL: Vec[UInt]): UInt = {
     //    val next_state_s3 = repl.get_next_state(repl_state_s3, touch_way_s3, req_type, new_TC, new_UC, binD, binL, sumL, maxL, minL, maxD, minD)
-    val next_state_s2 = repl.get_next_state(repl_state, way_s2, inv, bypass, req_type, new_TC, new_UC, DLcond1, DLcond2, DLcond3)
+    val next_state_s2 = repl.get_next_state(repl_state, way_s2, inv_s2, bypass, req_type, new_TC, new_UC, DLcond1, DLcond2, DLcond3)
     val repl_init = Wire(Vec(ways, UInt(2.W)))
     repl_init.foreach(_ := 3.U(2.W))
     replacer_sram.get.io.w(
@@ -423,7 +428,8 @@ class SubDirectory[T <: Data](
       1.U
     )
 
-//    io.resp.bits.bypass := bypass && !inv && !hit_s2
+    val req_Acquire_s2 = req_s2.replacerInfo.channel(0) && (req_s2.replacerInfo.opcode === TLMessages.AcquirePerm || req_s2.replacerInfo.opcode === TLMessages.AcquireBlock)
+//    io.resp.bits.bypass := bypass && !inv_s2 && !hit_s2
     io.resp.bits.bypass := false.B
     io.resp.bits.TC := Mux(req_s2.replacerInfo.channel(0) && (req_s2.replacerInfo.opcode === TLMessages.AcquirePerm || req_s2.replacerInfo.opcode === TLMessages.AcquireBlock), Mux(hit_s2, Mux(TC_s2 === 3.U, 3.U, TC_s2 + 1.U), 1.U), 0.U)
     io.resp.bits.UC := new_UC
@@ -440,6 +446,7 @@ class SubDirectory[T <: Data](
     io.resp.bits.channel := req_s2.replacerInfo.channel
     io.resp.bits.opcode := req_s2.replacerInfo.opcode
     io.resp.bits.set := req_s2.set
+    io.resp.bits.doCache := Mux(req_Acquire_s2, Mux(inv_s2 || hit_s2, true.B, false.B), true.B)
 
   } else if(replacement == "plru") {
     val next_state = repl.get_next_state(repl_state, way_s1)
@@ -464,6 +471,7 @@ class SubDirectory[T <: Data](
     io.resp.bits.channel := req_s2.replacerInfo.channel
     io.resp.bits.opcode := req_s2.replacerInfo.opcode
     io.resp.bits.set := req_s2.set
+    io.resp.bits.doCache := true.B
   } else {
     io.resp.bits.bypass := false.B
     io.resp.bits.TC := 0.U
@@ -481,6 +489,7 @@ class SubDirectory[T <: Data](
     io.resp.bits.channel := req_s2.replacerInfo.channel
     io.resp.bits.opcode := req_s2.replacerInfo.opcode
     io.resp.bits.set := req_s2.set
+    io.resp.bits.doCache := true.B
   }
 
 

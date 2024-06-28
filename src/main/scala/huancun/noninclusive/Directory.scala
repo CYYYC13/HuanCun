@@ -62,8 +62,9 @@ class SelfDirResult(implicit p: Parameters) extends SelfDirEntry {
   val way = UInt(wayBits.W)
   val tag = UInt(tagBits.W)
   val error = Bool()
-  val bypass = Bool()
+  val bypass = Bool() // for release
   val TC = UInt(2.W)
+  val doCache = Bool()  // for acquire
 }
 
 class ClientDirResult(implicit p: Parameters) extends HuanCunBundle with HasClientInfo {
@@ -307,6 +308,7 @@ class Directory(implicit p: Parameters)
   resp.bits.self.prefetch.foreach(p => p := selfResp.bits.dir.prefetch.get)
   resp.bits.self.bypass := selfResp.bits.bypass
   resp.bits.self.TC := selfResp.bits.TC
+  resp.bits.self.doCache := selfResp.bits.doCache
   resp.bits.clients.way := clientResp.bits.way
   resp.bits.clients.tag := clientResp.bits.tag
   resp.bits.clients.error := Cat(resp.bits.clients.states.map(_.hit)).orR && clientResp.bits.error
@@ -393,6 +395,10 @@ class Directory(implicit p: Parameters)
   XSPerfAccumulate(cacheParams, "selfdir_BRANCH", RegNext(resp.valid) && resp.bits.self.state === BRANCH)
   XSPerfAccumulate(cacheParams, "selfdir_TRUNK", RegNext(resp.valid) && resp.bits.self.state === TRUNK)
   XSPerfAccumulate(cacheParams, "selfdir_INVALID", RegNext(resp.valid) && resp.bits.self.state === INVALID)
+
+  XSPerfAccumulate(cacheParams, "selfdir_A_req_BtoT", RegNext(req_r.replacerInfo.channel(0) && resp.valid && (req_r.replacerInfo.param === 2.U)))
+  XSPerfAccumulate(cacheParams, "selfdir_A_req_BtoT_miss", RegNext(req_r.replacerInfo.channel(0) && resp.valid && (req_r.replacerInfo.param === 2.U)) && !resp.bits.self.hit)
+  XSPerfAccumulate(cacheParams, "selfdir_Hint", RegNext(req_r.replacerInfo.channel(0) && resp.valid && (req_r.replacerInfo.opcode === TLMessages.Hint)))
   //val perfinfo = IO(new Bundle(){
   //  val perfEvents = Output(new PerfEventsBundle(numPCntHcDir))
   //})
@@ -409,6 +415,9 @@ class Directory(implicit p: Parameters)
     ("selfdir_BRANCH    ", RegNext(resp.valid) && resp.bits.self.state === BRANCH                    ),
     ("selfdir_TRUNK     ", RegNext(resp.valid) && resp.bits.self.state === TRUNK                     ),
     ("selfdir_INVALID   ", RegNext(resp.valid) && resp.bits.self.state === INVALID                   ),
+    ("selfdir_Hint      ", RegNext(req_r.replacerInfo.channel(0) && resp.valid && (req_r.replacerInfo.opcode === TLMessages.Hint))),
+    ("selfdir_A_req_BtoT", RegNext(req_r.replacerInfo.channel(0) && resp.valid && (req_r.replacerInfo.param === 2.U))),
+    ("selfdir_A_req_BtoT_miss", RegNext(req_r.replacerInfo.channel(0) && resp.valid && (req_r.replacerInfo.param === 2.U)) && !resp.bits.self.hit),
   )
 
   for (((perf_out,(perf_name,perf)),i) <- perfinfo.zip(perfEvents).zipWithIndex) {

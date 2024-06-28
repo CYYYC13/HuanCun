@@ -219,6 +219,7 @@ class SourceDHazard(implicit p: Parameters) extends HuanCunBundle {
 class ReplacerInfo() extends Bundle {
   val channel = UInt(3.W)
   val opcode = UInt(3.W)
+  val param = UInt(3.W)
   val reqSource = UInt(MemReqSource.reqSourceBits.W)
   val UC = UInt(2.W)
   val TC = UInt(2.W)
