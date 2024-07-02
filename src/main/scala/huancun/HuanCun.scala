@@ -369,6 +369,7 @@ class HuanCun(implicit p: Parameters) extends LazyModule with HasHuanCunParamete
           case BankBitsKey => bankBits
         })) }
         slice.io.in <> in
+        slice.io.sliceId := i.U
         in.b.bits.address := restoreAddress(slice.io.in.b.bits.address, i)
         out <> slice.io.out
         out.a.bits.address := restoreAddress(slice.io.out.a.bits.address, i)

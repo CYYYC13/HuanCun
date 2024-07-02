@@ -8,7 +8,7 @@ import huancun.MetaData._
 import huancun._
 import huancun.debug.{DirectoryLogger, TypeId}
 import huancun.utils._
-import utility.{ParallelMax, ParallelPriorityMux}
+import utility.{ChiselDB, MemReqSource, ParallelMax, ParallelPriorityMux}
 
 trait HasClientInfo { this: HasHuanCunParameters =>
   // assume all clients have same params
@@ -33,6 +33,52 @@ class SelfDirEntry(implicit p: Parameters) extends HuanCunBundle {
 class ClientDirEntry(implicit p: Parameters) extends HuanCunBundle {
   val state = UInt(stateBits.W)
   val alias = aliasBitsOpt.map(bits => UInt(bits.W))
+}
+
+class replInfo(implicit p: Parameters) extends HuanCunBundle {
+  val channel = UInt(3.W)
+  val opcode = UInt(3.W)
+  val tag = UInt(tagBits.W)
+  val sset = UInt(setBits.W)
+  val pc = UInt(39.W)
+  val pn = UInt(13.W)
+  val reqSource = UInt(MemReqSource.reqSourceBits.W)
+  val way = UInt(wayBits.W)
+  val hit = Bool()
+  // r/w EQ
+  val issampleset = Bool()
+  val write_ptr = UInt(5.W)
+  val evict_ptr = UInt(5.W)
+  val head_ptr = UInt(5.W)
+  // for A request
+  val update_EQ_wen = Bool()
+//  val match_EQ = new EQentry()  // old
+//  val update_EQ = new EQentry() // new
+  // for C request
+  val insert_EQ_wen = Bool()
+//  val evict_EQ = new EQentry()  // old
+//  val insert_EQ = new EQentry() // new
+  // for update Q_Table
+//  val head_Qvalue = SInt(20.W)
+
+  // read Q_Table and search for action
+//  val Qpc_Value = Vec(9, SInt(20.W))  // QPCread
+//  val Qpn_Value = Vec(9, SInt(20.W))  // QPNread
+  val exp_cnt = UInt(10.W)
+  val action = UInt(4.W)
+  // write Qpc
+  val Qpc_wen = Bool()
+  val Qpc_w_set = UInt(13.W)
+  val Qpc_w_way = UInt(4.W)
+//  val Qpc_w_value = SInt(20.W)
+  // write Qpc
+  val Qpn_wen = Bool()
+  val Qpn_w_set = UInt(13.W)
+  val Qpn_w_way = UInt(4.W)
+//  val Qpn_w_value = SInt(20.W)
+  // replacer
+  val repl_state = UInt(32.W)
+  val next_state = UInt(32.W)
 }
 
 class SelfDirResult(implicit p: Parameters) extends SelfDirEntry {
@@ -110,6 +156,7 @@ trait NonInclusiveCacheReplacerUpdate { this: HasUpdate =>
 
 class DirectoryIO(implicit p: Parameters) extends BaseDirectoryIO[DirResult, SelfDirWrite, SelfTagWrite] {
   val read = Flipped(DecoupledIO(new DirRead))
+  val sliceId = Input(UInt(2.W))
   val result = ValidIO(new DirResult)
   val dirWReq = Flipped(DecoupledIO(new SelfDirWrite))
   val tagWReq = Flipped(DecoupledIO(new SelfTagWrite))
@@ -124,6 +171,10 @@ class Directory(implicit p: Parameters)
 
   val stamp = GTimer()
   val selfDirW = io.dirWReq
+  val sliceId = WireInit(0.U)
+  sliceId := io.sliceId
+  dontTouch(sliceId)
+
   // dump self dir
   DirectoryLogger(cacheParams.name, TypeId.self_dir)(
     selfDirW.bits.set,
@@ -313,6 +364,46 @@ class Directory(implicit p: Parameters)
   clientDir.io.dir_w.bits.way := io.clientDirWReq.bits.way
   clientDir.io.dir_w.bits.dir := io.clientDirWReq.bits.data
   io.clientDirWReq.ready := clientDir.io.dir_w.ready && readyMask
+
+  val chromeDB = ChiselDB.createTable("l3_chrome_Dir", new replInfo(), basicDB = true)
+  val chromeInfo = Wire(new replInfo())
+  chromeInfo.channel := selfResp.bits.chromeInfo.channel
+  chromeInfo.opcode := selfResp.bits.chromeInfo.opcode
+  chromeInfo.tag := selfResp.bits.chromeInfo.tag
+  chromeInfo.sset := selfResp.bits.chromeInfo.sset
+  chromeInfo.pc := selfResp.bits.chromeInfo.pc
+  chromeInfo.reqSource := selfResp.bits.chromeInfo.reqSource
+  chromeInfo.way := selfResp.bits.chromeInfo.way
+  chromeInfo.hit := selfResp.bits.chromeInfo.hit
+  chromeInfo.issampleset := selfResp.bits.chromeInfo.issampleset
+  chromeInfo.write_ptr := selfResp.bits.chromeInfo.write_ptr
+  chromeInfo.evict_ptr := selfResp.bits.chromeInfo.evict_ptr
+  chromeInfo.head_ptr := selfResp.bits.chromeInfo.head_ptr
+  chromeInfo.update_EQ_wen := selfResp.bits.chromeInfo.update_EQ_wen
+//  chromeInfo.match_EQ := selfResp.bits.chromeInfo.match_EQ
+//  chromeInfo.update_EQ := selfResp.bits.chromeInfo.update_EQ
+  chromeInfo.insert_EQ_wen := selfResp.bits.chromeInfo.insert_EQ_wen
+//  chromeInfo.evict_EQ := selfResp.bits.chromeInfo.evict_EQ
+//  chromeInfo.insert_EQ := selfResp.bits.chromeInfo.insert_EQ
+//  chromeInfo.head_Qvalue := selfResp.bits.chromeInfo.head_Qvalue
+//  chromeInfo.Qpc_Value := selfResp.bits.chromeInfo.Qpc_Value
+//  chromeInfo.Qpn_Value := selfResp.bits.chromeInfo.Qpn_Value
+  chromeInfo.exp_cnt := selfResp.bits.chromeInfo.exp_cnt
+  chromeInfo.action := selfResp.bits.chromeInfo.action
+  chromeInfo.Qpc_wen := selfResp.bits.chromeInfo.Qpc_wen
+  chromeInfo.Qpc_w_set := selfResp.bits.chromeInfo.Qpc_w_set
+  chromeInfo.Qpc_w_way := selfResp.bits.chromeInfo.Qpc_w_way
+//  chromeInfo.Qpc_w_value := selfResp.bits.chromeInfo.Qpc_w_value
+  chromeInfo.Qpn_wen := selfResp.bits.chromeInfo.Qpn_wen
+  chromeInfo.Qpn_w_set := selfResp.bits.chromeInfo.Qpn_w_set
+  chromeInfo.Qpn_w_way := selfResp.bits.chromeInfo.Qpn_w_way
+//  chromeInfo.Qpn_w_value := selfResp.bits.chromeInfo.Qpn_w_value
+  chromeInfo.repl_state := selfResp.bits.chromeInfo.repl_state
+  chromeInfo.next_state := selfResp.bits.chromeInfo.next_state
+//  chromeDB.log(chromeInfo, RegNext(io.result.valid), s"L3_chrome_${sliceId}", clock, reset)
+  chromeDB.log(chromeInfo, RegNext(io.result.valid), s"L3_chrome", clock, reset)
+
+
 
   assert(dirReadPorts == 1)
   val req_r = RegEnable(req.bits, req.fire)

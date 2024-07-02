@@ -32,6 +32,7 @@ class Slice()(implicit p: Parameters) extends HuanCunModule {
   val io = IO(new Bundle {
     val in = Flipped(TLBundle(edgeIn.bundle))
     val out = TLBundle(edgeOut.bundle)
+    val sliceId = Input(UInt(2.W))
     val prefetch = prefetchOpt.map(_ => Flipped(new PrefetchIO))
     val ms_status = topDownOpt.map(_ => Vec(mshrsAll, ValidIO(new MSHRStatus)))
     val dir_result = topDownOpt.map(_ => ValidIO(new DirResult))
@@ -377,10 +378,12 @@ class Slice()(implicit p: Parameters) extends HuanCunModule {
   }
 
   val directory = Module({
-    if (cacheParams.inclusive) new inclusive.Directory()
-    else new noninclusive.Directory()
+//    if (cacheParams.inclusive) new inclusive.Directory()
+//    else
+      new noninclusive.Directory()
   })
   directory.io.read <> ctrl_arb(mshrAlloc.io.dirRead, ctrl.map(_.io.dir_read))
+  directory.io.sliceId := io.sliceId
   ctrl.map(c => {
     c.io.dir_result.valid := directory.io.result.valid && directory.io.result.bits.idOH(1, 0) === "b11".U
     c.io.dir_result.bits := directory.io.result.bits
@@ -454,7 +457,7 @@ class Slice()(implicit p: Parameters) extends HuanCunModule {
           ctrl.map(_.io.c_tag_w)
         )
       )
-    case (_: inclusive.Directory, _: Seq[inclusive.MSHR]) =>
+//    case (_: inclusive.Directory, _: Seq[inclusive.MSHR]) =>
     // skip
     case _ =>
       assert(false)

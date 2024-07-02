@@ -26,7 +26,7 @@ import chisel3.util.random.LFSR
 import freechips.rocketchip.tilelink.TLMessages
 import freechips.rocketchip.util.{Pow2ClockDivider, ReplacementPolicy}
 import huancun.utils._
-import utility.Code
+import utility.{Code, MemReqSource}
 
 trait BaseDirResult extends HuanCunBundle {
   val idOH = UInt(mshrsAll.W) // which mshr the result should be sent to
@@ -83,6 +83,52 @@ object HyperParam {
   def AcqEPV: UInt = 3.U
 }
 
+class ChromeInfo(implicit p: Parameters) extends HuanCunBundle {
+  val channel = UInt(3.W)
+  val opcode = UInt(3.W)
+  val tag = UInt(tagBits.W)
+  val sset = UInt(setBits.W)
+  val pc = UInt(39.W)
+  val pn = UInt(13.W)
+  val reqSource = UInt(MemReqSource.reqSourceBits.W)
+  val way = UInt(wayBits.W)
+  val hit = Bool()
+  // r/w EQ
+  val issampleset = Bool()
+  val write_ptr = UInt(5.W)
+  val evict_ptr = UInt(5.W)
+  val head_ptr = UInt(5.W)
+  // for A request
+  val update_EQ_wen = Bool()
+  val match_EQ = new EQentry()  // old
+  val update_EQ = new EQentry() // new
+  // for C request
+  val insert_EQ_wen = Bool()
+  val evict_EQ = new EQentry()  // old
+  val insert_EQ = new EQentry() // new
+  // for update Q_Table
+  val head_Qvalue = SInt(20.W)
+
+  // read Q_Table and search for action
+  val Qpc_Value = Vec(9, SInt(20.W))  // QPCread
+  val Qpn_Value = Vec(9, SInt(20.W))  // QPNread
+  val exp_cnt = UInt(10.W)
+  val action = UInt(4.W)
+  // write Qpc
+  val Qpc_wen = Bool()
+  val Qpc_w_set = UInt(13.W)
+  val Qpc_w_way = UInt(4.W)
+  val Qpc_w_value = SInt(20.W)
+  // write Qpc
+  val Qpn_wen = Bool()
+  val Qpn_w_set = UInt(13.W)
+  val Qpn_w_way = UInt(4.W)
+  val Qpn_w_value = SInt(20.W)
+  // replacer
+  val repl_state = UInt(32.W)
+  val next_state = UInt(32.W)
+}
+
 abstract class BaseDirectoryIO[T_RESULT <: BaseDirResult, T_DIR_W <: BaseDirWrite, T_TAG_W <: BaseTagWrite](
   implicit p: Parameters)
     extends HuanCunBundle {
@@ -127,6 +173,7 @@ class SubDirectory[T <: Data](
       val tag = UInt(tagBits.W)
       val dir = dir_init.cloneType
       val error = Bool()
+      val chromeInfo = new ChromeInfo()
     })
     val tag_w = Flipped(DecoupledIO(new Bundle() {
       val tag = UInt(tagBits.W)
@@ -156,14 +203,14 @@ class SubDirectory[T <: Data](
   val tag_wen = io.tag_w.valid
   val dir_wen = io.dir_w.valid
   val replacer_wen = RegInit(false.B)
-  val chrome_replacer_wen = WireInit(false.B)
+  val chrome_replacer_wen = RegInit(false.B)
   val QPC_wen = WireInit(false.B)
   val QPN_wen = WireInit(false.B)
   val EQ_wen = WireInit(false.B)
   io.tag_w.ready := true.B
   io.dir_w.ready := true.B
-//  io.read.ready := !tag_wen && !dir_wen && !replacer_wen && resetFinish && !chrome_replacer_wen
-  io.read.ready := !tag_wen && !dir_wen && resetFinish && !chrome_replacer_wen && !QPC_wen && !QPN_wen && !EQ_wen
+  io.read.ready := !tag_wen && !dir_wen && resetFinish && !chrome_replacer_wen
+//  io.read.ready := !tag_wen && !dir_wen && resetFinish && !chrome_replacer_wen && !QPC_wen && !QPN_wen && !EQ_wen
 
   def tagCode: Code = Code.fromString(p(HCCacheParamsKey).tagECC)
 
@@ -274,6 +321,7 @@ class SubDirectory[T <: Data](
   io.resp.bits.dir := meta_s2
   io.resp.bits.tag := tag_s2
   io.resp.bits.error := io.resp.bits.hit && error_s2
+  io.resp.bits.chromeInfo := 0.U.asTypeOf(io.resp.bits.chromeInfo)
 
   metaArray.io.w(
     !resetFinish || dir_wen,
@@ -424,11 +472,9 @@ class SubDirectory[T <: Data](
     pn_Q_value_s1 := Mux(exp_cnt === 1023.U, explore_pn_Q_value_s1, exploit_pn_Q_value_s1)
     Q_value_s1 := Mux(exp_cnt === 1023.U, explore_Q_value_s1, exploit_Q_value_s1)
 
-
-
-    val write_ptr = RegInit(0.U(5.W))
-    val evict_ptr = RegInit(0.U(5.W))
-    val head_ptr = RegInit(0.U(5.W))
+    val write_ptr = RegInit(VecInit(Seq.fill(64)(0.U(5.W))))
+    val evict_ptr = RegInit(VecInit(Seq.fill(64)(0.U(5.W))))
+    val head_ptr = RegInit(VecInit(Seq.fill(64)(0.U(5.W))))
 
     // Acquire or Prefetch: update EQ_entry(addr && latest)
     // Acquire_Release && sampledset: insert new entry
@@ -438,16 +484,17 @@ class SubDirectory[T <: Data](
         m := EQread_hold(i).addr_tag
     }
 
-    val (has_match_EQ, eq_match_idx) = addr_match(req_s1.tag, EQ_tag_vec, evict_ptr)
-    val EQ_update_entry = EQread_hold(eq_match_idx)
+    val (has_match_EQ, eq_match_idx) = addr_match(req_s1.tag, EQ_tag_vec, evict_ptr(req_s1.set(5,0)))
+    val EQ_match_entry = EQread_hold(eq_match_idx)
+    val EQ_update_entry = EQ_match_entry
     EQ_update_entry.reward := Mux(req_Acquire_s1, Mux(hit_s1, Rewards.Demand_hit, Rewards.Demand_miss), Mux(req_prefetch_s1 || req_Hint_s1, Mux(hit_s1, Rewards.Prefetch_hit, Rewards.Prefetch_miss), 0.S))
 
-    val EQ_evict_entry = EQread_hold(evict_ptr)
+    val EQ_evict_entry = EQread_hold(evict_ptr(req_s1.set(5,0)))
     val EQ_evict_entry_reward = WireInit(0.S(20.W))
     EQ_evict_entry_reward := Mux(EQ_evict_entry.reward === 0.S, Mux(EQ_evict_entry.action === Actions.HitEPV3 || EQ_evict_entry.action === Actions.MissBypass, Rewards.Evict_pos, Rewards.Evict_neg), EQ_evict_entry.reward)
 
 
-    val EQ_head_entry = EQread_hold(head_ptr)
+    val EQ_head_entry = EQread_hold(head_ptr(req_s1.set(5,0)))
     val EQ_head_Q_value = EQ_head_entry.Q_value
 
     val EQ_new_entry = WireInit(0.U.asTypeOf(new EQentry()))
@@ -461,12 +508,12 @@ class SubDirectory[T <: Data](
 
     val EQ_update_A = isSampleSets_s1 && has_match_EQ && (req_Acquire_s1 || req_prefetch_s1 || req_Hint_s1)
     val EQ_insert_C = isSampleSets_s1 && req_Acquire_Release_s1
-    val EQ_evict = EQ_insert_C && (write_ptr === 28.U)
+    val EQ_evict = EQ_insert_C && (write_ptr(req_s1.set(5,0)) === 28.U)
     EQ_wen := reqValidReg && (EQ_update_A || EQ_insert_C)
     val EQ_w_set = req_s1.set(5,0)
-    val EQ_w_way = Mux(EQ_update_A, eq_match_idx, Mux(write_ptr < 28.U, write_ptr, evict_ptr))
+    val EQ_w_way = Mux(EQ_update_A, eq_match_idx, Mux(write_ptr(req_s1.set(5,0)) < 28.U, write_ptr(req_s1.set(5,0)), evict_ptr(req_s1.set(5,0))))
 //    val EQ_w_entry = Mux(EQ_update_A, EQ_update_entry, EQ_new_entry)
-    val EQ_w_entry = Mux(EQ_update_A, EQ_new_entry, EQ_new_entry)
+    val EQ_w_entry = Mux(EQ_update_A, EQ_update_entry, EQ_new_entry)
     val EQ_w_init = WireInit(0.U.asTypeOf(new EQentry))
     EQ.io.w(
       !resetFinish || EQ_wen,
@@ -474,9 +521,9 @@ class SubDirectory[T <: Data](
       Mux(resetFinish, EQ_w_set, resetIdx),
       Mux(resetFinish, UIntToOH(EQ_w_way), Fill(28, true.B))
     )
-    write_ptr := Mux(isSampleSets_s1 && req_Acquire_Release_s1 && write_ptr < 28.U, write_ptr + 1.U, write_ptr)
-    evict_ptr := Mux(isSampleSets_s1 && req_Acquire_Release_s1 && write_ptr === 28.U, Mux(evict_ptr < 27.U, evict_ptr + 1.U, 0.U), evict_ptr)
-    head_ptr := Mux(evict_ptr < 27.U, evict_ptr + 1.U, 0.U)
+    write_ptr(req_s1.set(5,0)) := Mux(isSampleSets_s1 && req_Acquire_Release_s1 && write_ptr(req_s1.set(5,0)) < 28.U, write_ptr(req_s1.set(5,0)) + 1.U, write_ptr(req_s1.set(5,0)))
+    evict_ptr(req_s1.set(5,0)) := Mux(isSampleSets_s1 && req_Acquire_Release_s1 && write_ptr(req_s1.set(5,0)) === 28.U, Mux(evict_ptr(req_s1.set(5,0)) < 27.U, evict_ptr(req_s1.set(5,0)) + 1.U, 0.U), evict_ptr(req_s1.set(5,0)))
+    head_ptr(req_s1.set(5,0)) := Mux(evict_ptr(req_s1.set(5,0)) < 27.U, evict_ptr(req_s1.set(5,0)) + 1.U, 0.U)
 
 
     // stage 2: SARSA and write Q_Table/replacer_sram
@@ -553,7 +600,7 @@ class SubDirectory[T <: Data](
     val req_Acquire_Release_s2 = RegEnable(req_Acquire_Release_s1, false.B, reqValidReg)
     val req_prefetch_Release_s2 = RegEnable(req_prefetch_Release_s1, false.B, reqValidReg)
     val req_PTW_Release_s2 = RegEnable(req_PTW_Release_s1, false.B, reqValidReg)
-    chrome_replacer_wen := req_valid_s2 && ((req_A_s2 && hit_s2) || req_Hint_s2 || req_Acquire_Release_s2 || req_prefetch_Release_s2 || req_PTW_Release_s2)
+    chrome_replacer_wen := reqValidReg && ((req_A_s1 && hit_s1) || req_Hint_s1 || req_Acquire_Release_s1 || req_prefetch_Release_s1 || req_PTW_Release_s1)
     val next_state_s2 = repl.get_next_state(repl_state, way_s2, hit_s2, req_Acquire_s2, req_prefetch_s2, req_Hint_s2, req_Acquire_Release_s2, req_prefetch_Release_s2 || req_PTW_Release_s2, action_s2, pn_action_s2)
     val repl_init = Wire(Vec(ways, UInt(2.W)))
     repl_init.foreach(_ := 3.U(2.W))
@@ -564,7 +611,52 @@ class SubDirectory[T <: Data](
       1.U
     )
 
+    val write_ptr_s2 = RegEnable(write_ptr(req_s1.set(5,0)), 0.U, reqValidReg)
+    val evict_ptr_s2 = RegEnable(evict_ptr(req_s1.set(5,0)), 0.U, reqValidReg)
+    val head_ptr_s2 = RegEnable(head_ptr(req_s1.set(5,0)), 0.U, reqValidReg)
+    val update_EQ_wen = RegEnable(reqValidReg && EQ_update_A, false.B, reqValidReg)
+    val insert_EQ_wen = RegEnable(reqValidReg && EQ_insert_C, false.B, reqValidReg)
+    val match_EQ_s2 = RegEnable(EQ_match_entry, reqValidReg)
+    val update_EQ_s2 = RegEnable(EQ_update_entry, reqValidReg)
+    val evict_EQ_s2 = RegEnable(EQ_evict_entry, reqValidReg)
+    val insert_EQ_s2 = RegEnable(EQ_new_entry, reqValidReg)
+    val head_Qvalue_s2 = RegEnable(EQ_head_Q_value, 0.S, reqValidReg)
+    val exp_cnt_s2 = RegEnable(exp_cnt, 0.U, reqValidReg)
 
+    val resp_chrome = io.resp.bits.chromeInfo
+    resp_chrome.channel := req_s2.replacerInfo.channel
+    resp_chrome.opcode := req_s2.replacerInfo.opcode
+    resp_chrome.tag := req_s2.tag
+    resp_chrome.sset := req_s2.set
+    resp_chrome.pc := req_s2.replacerInfo.pc
+    resp_chrome.reqSource := req_s2.replacerInfo.reqSource
+    resp_chrome.way := way_s2
+    resp_chrome.hit := hit_s2
+    resp_chrome.issampleset := isSampleSets_s2
+    resp_chrome.write_ptr := write_ptr_s2
+    resp_chrome.evict_ptr := evict_ptr_s2
+    resp_chrome.head_ptr := head_ptr_s2
+    resp_chrome.update_EQ_wen := update_EQ_wen
+    resp_chrome.match_EQ := match_EQ_s2
+    resp_chrome.update_EQ := update_EQ_s2
+    resp_chrome.insert_EQ_wen := insert_EQ_wen
+    resp_chrome.evict_EQ := evict_EQ_s2
+    resp_chrome.insert_EQ := insert_EQ_s2
+    resp_chrome.head_Qvalue := head_Qvalue_s2
+    resp_chrome.Qpc_Value := QPCread_hold
+    resp_chrome.Qpn_Value := QPNread_hold
+    resp_chrome.exp_cnt := exp_cnt_s2
+    resp_chrome.action := action_s2
+    resp_chrome.Qpc_wen := QPC_wen
+    resp_chrome.Qpc_w_set := QPC_w_set
+    resp_chrome.Qpc_w_way := QPC_w_way
+    resp_chrome.Qpc_w_value := QPC_w
+    resp_chrome.Qpn_wen := QPN_wen
+    resp_chrome.Qpn_w_set := QPN_w_set
+    resp_chrome.Qpn_w_way := QPN_w_way
+    resp_chrome.Qpn_w_value := QPN_w
+    resp_chrome.repl_state := repl_state
+    resp_chrome.next_state := next_state_s2
   }
 
 
