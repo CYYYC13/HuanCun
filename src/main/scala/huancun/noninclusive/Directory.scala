@@ -40,7 +40,7 @@ class replInfo(implicit p: Parameters) extends HuanCunBundle {
   val opcode = UInt(3.W)
   val tag = UInt(tagBits.W)
   val sset = UInt(setBits.W)
-  val pc = UInt(39.W)
+  val pc = UInt(13.W)
   val pn = UInt(13.W)
   val reqSource = UInt(MemReqSource.reqSourceBits.W)
   val way = UInt(wayBits.W)
@@ -52,30 +52,58 @@ class replInfo(implicit p: Parameters) extends HuanCunBundle {
   val head_ptr = UInt(5.W)
   // for A request
   val update_EQ_wen = Bool()
-//  val match_EQ = new EQentry()  // old
-//  val update_EQ = new EQentry() // new
+  //  val match_EQ = new EQentry()  // old
+  val match_EQ_tag = UInt(tagBits.W)
+  val match_EQ_pc = UInt(13.W)
+  val match_EQ_pn = UInt(13.W)
+  val match_EQ_action = UInt(4.W)
+  val match_EQ_trigger = Bool()
+  val match_EQ_reward = UInt(20.W)
+  val match_EQ_Qvalue = UInt(20.W)
+  //  val update_EQ = new EQentry() // new
+  val update_EQ_tag = UInt(tagBits.W)
+  val update_EQ_pc = UInt(13.W)
+  val update_EQ_pn = UInt(13.W)
+  val update_EQ_action = UInt(4.W)
+  val update_EQ_trigger = Bool()
+  val update_EQ_reward = UInt(20.W)
+  val update_EQ_Qvalue = UInt(20.W)
   // for C request
   val insert_EQ_wen = Bool()
-//  val evict_EQ = new EQentry()  // old
-//  val insert_EQ = new EQentry() // new
+  //  val evict_EQ = new EQentry()  // old
+  val evict_EQ_tag = UInt(tagBits.W)
+  val evict_EQ_pc = UInt(13.W)
+  val evict_EQ_pn = UInt(13.W)
+  val evict_EQ_action = UInt(4.W)
+  val evict_EQ_trigger = Bool()
+  val evict_EQ_reward = UInt(20.W)
+  val evict_EQ_Qvalue = UInt(20.W)
+  //  val insert_EQ = new EQentry() // new
+  val insert_EQ_tag = UInt(tagBits.W)
+  val insert_EQ_pc = UInt(13.W)
+  val insert_EQ_pn = UInt(13.W)
+  val insert_EQ_action = UInt(4.W)
+  val insert_EQ_trigger = Bool()
+  val insert_EQ_reward = UInt(20.W)
+  val insert_EQ_Qvalue = UInt(20.W)
   // for update Q_Table
-//  val head_Qvalue = SInt(20.W)
+  val head_Qvalue = UInt(20.W)
 
   // read Q_Table and search for action
-//  val Qpc_Value = Vec(9, SInt(20.W))  // QPCread
-//  val Qpn_Value = Vec(9, SInt(20.W))  // QPNread
+  val Qpc_Value = Vec(9, UInt(20.W))  // QPCread
+  val Qpn_Value = Vec(9, UInt(20.W))  // QPNread
   val exp_cnt = UInt(10.W)
   val action = UInt(4.W)
   // write Qpc
   val Qpc_wen = Bool()
   val Qpc_w_set = UInt(13.W)
   val Qpc_w_way = UInt(4.W)
-//  val Qpc_w_value = SInt(20.W)
+  val Qpc_w_value = UInt(20.W)
   // write Qpc
   val Qpn_wen = Bool()
   val Qpn_w_set = UInt(13.W)
   val Qpn_w_way = UInt(4.W)
-//  val Qpn_w_value = SInt(20.W)
+  val Qpn_w_value = UInt(20.W)
   // replacer
   val repl_state = UInt(32.W)
   val next_state = UInt(32.W)
@@ -372,6 +400,7 @@ class Directory(implicit p: Parameters)
   chromeInfo.tag := selfResp.bits.chromeInfo.tag
   chromeInfo.sset := selfResp.bits.chromeInfo.sset
   chromeInfo.pc := selfResp.bits.chromeInfo.pc
+  chromeInfo.pn := selfResp.bits.chromeInfo.pn
   chromeInfo.reqSource := selfResp.bits.chromeInfo.reqSource
   chromeInfo.way := selfResp.bits.chromeInfo.way
   chromeInfo.hit := selfResp.bits.chromeInfo.hit
@@ -380,28 +409,62 @@ class Directory(implicit p: Parameters)
   chromeInfo.evict_ptr := selfResp.bits.chromeInfo.evict_ptr
   chromeInfo.head_ptr := selfResp.bits.chromeInfo.head_ptr
   chromeInfo.update_EQ_wen := selfResp.bits.chromeInfo.update_EQ_wen
-//  chromeInfo.match_EQ := selfResp.bits.chromeInfo.match_EQ
-//  chromeInfo.update_EQ := selfResp.bits.chromeInfo.update_EQ
+  //  chromeInfo.match_EQ := selfResp.bits.chromeInfo.match_EQ
+  chromeInfo.match_EQ_tag := selfResp.bits.chromeInfo.match_EQ.addr_tag
+  chromeInfo.match_EQ_pc := selfResp.bits.chromeInfo.match_EQ.pc
+  chromeInfo.match_EQ_pn := selfResp.bits.chromeInfo.match_EQ.pn
+  chromeInfo.match_EQ_action := selfResp.bits.chromeInfo.match_EQ.action
+  chromeInfo.match_EQ_trigger := selfResp.bits.chromeInfo.match_EQ.trigger
+  chromeInfo.match_EQ_reward := selfResp.bits.chromeInfo.match_EQ.reward.asUInt
+  chromeInfo.match_EQ_Qvalue := selfResp.bits.chromeInfo.match_EQ.Q_value.asUInt
+  //  chromeInfo.update_EQ := selfResp.bits.chromeInfo.update_EQ
+  chromeInfo.update_EQ_tag := selfResp.bits.chromeInfo.update_EQ.addr_tag
+  chromeInfo.update_EQ_pc := selfResp.bits.chromeInfo.update_EQ.pc
+  chromeInfo.update_EQ_pn := selfResp.bits.chromeInfo.update_EQ.pn
+  chromeInfo.update_EQ_action := selfResp.bits.chromeInfo.update_EQ.action
+  chromeInfo.update_EQ_trigger := selfResp.bits.chromeInfo.update_EQ.trigger
+  chromeInfo.update_EQ_reward := selfResp.bits.chromeInfo.update_EQ.reward.asUInt
+  chromeInfo.update_EQ_Qvalue := selfResp.bits.chromeInfo.update_EQ.Q_value.asUInt
   chromeInfo.insert_EQ_wen := selfResp.bits.chromeInfo.insert_EQ_wen
-//  chromeInfo.evict_EQ := selfResp.bits.chromeInfo.evict_EQ
-//  chromeInfo.insert_EQ := selfResp.bits.chromeInfo.insert_EQ
-//  chromeInfo.head_Qvalue := selfResp.bits.chromeInfo.head_Qvalue
-//  chromeInfo.Qpc_Value := selfResp.bits.chromeInfo.Qpc_Value
-//  chromeInfo.Qpn_Value := selfResp.bits.chromeInfo.Qpn_Value
+  //  chromeInfo.evict_EQ := selfResp.bits.chromeInfo.evict_EQ
+  chromeInfo.evict_EQ_tag := selfResp.bits.chromeInfo.evict_EQ.addr_tag
+  chromeInfo.evict_EQ_pc := selfResp.bits.chromeInfo.evict_EQ.pc
+  chromeInfo.evict_EQ_pn := selfResp.bits.chromeInfo.evict_EQ.pn
+  chromeInfo.evict_EQ_action := selfResp.bits.chromeInfo.evict_EQ.action
+  chromeInfo.evict_EQ_trigger := selfResp.bits.chromeInfo.evict_EQ.trigger
+  chromeInfo.evict_EQ_reward := selfResp.bits.chromeInfo.evict_EQ.reward.asUInt
+  chromeInfo.evict_EQ_Qvalue := selfResp.bits.chromeInfo.evict_EQ.Q_value.asUInt
+  //  chromeInfo.insert_EQ := selfResp.bits.chromeInfo.insert_EQ
+  chromeInfo.insert_EQ_tag := selfResp.bits.chromeInfo.insert_EQ.addr_tag
+  chromeInfo.insert_EQ_pc := selfResp.bits.chromeInfo.insert_EQ.pc
+  chromeInfo.insert_EQ_pn := selfResp.bits.chromeInfo.insert_EQ.pn
+  chromeInfo.insert_EQ_action := selfResp.bits.chromeInfo.insert_EQ.action
+  chromeInfo.insert_EQ_trigger := selfResp.bits.chromeInfo.insert_EQ.trigger
+  chromeInfo.insert_EQ_reward := selfResp.bits.chromeInfo.insert_EQ.reward.asUInt
+  chromeInfo.insert_EQ_Qvalue := selfResp.bits.chromeInfo.insert_EQ.Q_value.asUInt
+  chromeInfo.head_Qvalue := selfResp.bits.chromeInfo.head_Qvalue.asUInt
+  chromeInfo.Qpc_Value.zipWithIndex.foreach {
+    case (m, i) =>
+      m := selfResp.bits.chromeInfo.Qpc_Value(i).asUInt
+  }
+  chromeInfo.Qpn_Value.zipWithIndex.foreach {
+    case (m, i) =>
+      m := selfResp.bits.chromeInfo.Qpn_Value(i).asUInt
+  }
   chromeInfo.exp_cnt := selfResp.bits.chromeInfo.exp_cnt
   chromeInfo.action := selfResp.bits.chromeInfo.action
   chromeInfo.Qpc_wen := selfResp.bits.chromeInfo.Qpc_wen
   chromeInfo.Qpc_w_set := selfResp.bits.chromeInfo.Qpc_w_set
   chromeInfo.Qpc_w_way := selfResp.bits.chromeInfo.Qpc_w_way
-//  chromeInfo.Qpc_w_value := selfResp.bits.chromeInfo.Qpc_w_value
+  chromeInfo.Qpc_w_value := selfResp.bits.chromeInfo.Qpc_w_value.asUInt
   chromeInfo.Qpn_wen := selfResp.bits.chromeInfo.Qpn_wen
   chromeInfo.Qpn_w_set := selfResp.bits.chromeInfo.Qpn_w_set
   chromeInfo.Qpn_w_way := selfResp.bits.chromeInfo.Qpn_w_way
-//  chromeInfo.Qpn_w_value := selfResp.bits.chromeInfo.Qpn_w_value
+  chromeInfo.Qpn_w_value := selfResp.bits.chromeInfo.Qpn_w_value.asUInt
   chromeInfo.repl_state := selfResp.bits.chromeInfo.repl_state
   chromeInfo.next_state := selfResp.bits.chromeInfo.next_state
-//  chromeDB.log(chromeInfo, RegNext(io.result.valid), s"L3_chrome_${sliceId}", clock, reset)
-  chromeDB.log(chromeInfo, RegNext(io.result.valid), s"L3_chrome", clock, reset)
+   chromeDB.log(chromeInfo, RegNext(io.result.valid), s"L3_chrome_${sliceId}", clock, reset)
+//  chromeDB.log(chromeInfo, RegNext(io.result.valid), s"L3_chrome", clock, reset)
 
 
 
