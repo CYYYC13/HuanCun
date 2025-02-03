@@ -140,12 +140,13 @@ class SubDirectory[T <: Data](
   val tag_wen = io.tag_w.valid
   val dir_wen = io.dir_w.valid
   val replacer_wen_old = RegInit(false.B)
-  val replacer_wen = WireInit(false.B)
+  val replacer_wen = RegInit(false.B)
   val binWen = WireInit(false.B)
   val tcucWen = WireInit(false.B)
   io.tag_w.ready := true.B
   io.dir_w.ready := true.B
-  io.read.ready := !tag_wen && !dir_wen && !replacer_wen && resetFinish && !tcucWen && !binWen
+//  io.read.ready := !tag_wen && !dir_wen && !replacer_wen && resetFinish && !tcucWen && !binWen
+  io.read.ready := !tag_wen && !dir_wen && !replacer_wen && resetFinish
 
   def tagCode: Code = Code.fromString(p(HCCacheParamsKey).tagECC)
 
@@ -275,9 +276,13 @@ class SubDirectory[T <: Data](
   /* ====== Update ====== */
   // PLRU: update replacer only when releaseData or Hint, at stage 2
   // TUBINS:  update replacer when when A hit or C req, at stage 2
-  val updateAHit = RegNext(reqValidReg) && req_s2.replacerInfo.channel(0) && hit_s2 &&(req_s2.replacerInfo.opcode === TLMessages.AcquireBlock || req_s2.replacerInfo.opcode === TLMessages.AcquirePerm || req_s2.replacerInfo.opcode === TLMessages.Hint)
-  val updateC = RegNext(reqValidReg) && req_s2.replacerInfo.channel(2) && (req_s2.replacerInfo.opcode === TLMessages.ReleaseData || req_s2.replacerInfo.opcode === TLMessages.Release)
-  val updateHintMiss = RegNext(reqValidReg) && req_s2.replacerInfo.channel(0) && !hit_s2 &&(req_s2.replacerInfo.opcode === TLMessages.Hint) && req_s2.replacerInfo.preferCache
+//  val updateAHit = RegNext(reqValidReg) && req_s2.replacerInfo.channel(0) && hit_s2 &&(req_s2.replacerInfo.opcode === TLMessages.AcquireBlock || req_s2.replacerInfo.opcode === TLMessages.AcquirePerm || req_s2.replacerInfo.opcode === TLMessages.Hint)
+//  val updateC = RegNext(reqValidReg) && req_s2.replacerInfo.channel(2) && (req_s2.replacerInfo.opcode === TLMessages.ReleaseData || req_s2.replacerInfo.opcode === TLMessages.Release)
+//  val updateHintMiss = RegNext(reqValidReg) && req_s2.replacerInfo.channel(0) && !hit_s2 &&(req_s2.replacerInfo.opcode === TLMessages.Hint) && req_s2.replacerInfo.preferCache
+
+  val updateAHit = reqValidReg && req_s1.replacerInfo.channel(0) && hit_s1 && (req_s1.replacerInfo.opcode === TLMessages.AcquireBlock || req_s1.replacerInfo.opcode === TLMessages.AcquirePerm || req_s1.replacerInfo.opcode === TLMessages.Hint)
+  val updateC = reqValidReg && req_s1.replacerInfo.channel(2) && (req_s1.replacerInfo.opcode === TLMessages.ReleaseData || req_s1.replacerInfo.opcode === TLMessages.Release)
+  val updateHintMiss = reqValidReg && req_s1.replacerInfo.channel(0) && !hit_s1 && (req_s1.replacerInfo.opcode === TLMessages.Hint) && req_s1.replacerInfo.preferCache
 
 //  replacer_wen := RegNext(updateAHit) || RegNext(updateC)
   replacer_wen := updateAHit || updateC || updateHintMiss
@@ -325,7 +330,7 @@ class SubDirectory[T <: Data](
 //    val isSampleSets = Mux((req_s2.set(9, 5) + req_s2.set(4, 0)) === 31.U, true.B, false.B) // choose 64 sample from 4096 sets
 //    val isSampleSets = Mux((req_s2.set(11, 6) + req_s2.set(5, 0)) === 63.U, true.B, false.B) // choose 64 sample from 4096 sets
 //  val isSampleSets = Mux((req_s2.set(11, 6) + req_s2.set(5, 0)) > 0.U, true.B, false.B)
-    val isSampleSets = Mux(req_s2.set(5, 0) > 0.U, true.B, false.B)
+    val isSampleSets = Mux(req_s1.set(5, 0) > 0.U, true.B, false.B)
   binWen := (updateAHit || updateC || updateHintMiss) && isSampleSets
     binRead := binArray.io.r(io.read.fire, 0.U).resp.data
 //    val binDL_all_s2 = RegEnable(binRead, 0.U.asTypeOf(binRead), reqValidReg)
@@ -384,11 +389,12 @@ class SubDirectory[T <: Data](
 //      Mux(binD >= 2.U, binD - 2.U, 0.U),
 //      Mux(req_s2.replacerInfo.channel(2) && (req_s2.replacerInfo.opcode === TLMessages.Release || req_s2.replacerInfo.opcode === TLMessages.ReleaseData), binD + 1.U,
 //        binD)), binD)
-    new_binD := Mux(isSampleSets,
+    val isSampleSets_s2 = Mux(req_s2.set(5, 0) > 0.U, true.B, false.B)
+    new_binD := Mux(isSampleSets_s2,
                   Mux(req_s2.replacerInfo.channel(2) && (req_s2.replacerInfo.opcode === TLMessages.Release || req_s2.replacerInfo.opcode === TLMessages.ReleaseData), binD + 1.U,
                     Mux(!hit_s2 && req_s2.replacerInfo.channel(0) && req_s2.replacerInfo.opcode === TLMessages.Hint && req_s2.replacerInfo.preferCache, binD + 1.U, binD)), binD)
     val new_binL = WireInit(0.U(20.W))
-    new_binL := Mux(isSampleSets, Mux(hit_s2 && req_s2.replacerInfo.channel(0) && (req_s2.replacerInfo.opcode === TLMessages.AcquirePerm || req_s2.replacerInfo.opcode === TLMessages.AcquireBlock || req_prefetch),
+    new_binL := Mux(isSampleSets_s2, Mux(hit_s2 && req_s2.replacerInfo.channel(0) && (req_s2.replacerInfo.opcode === TLMessages.AcquirePerm || req_s2.replacerInfo.opcode === TLMessages.AcquireBlock || req_prefetch),
       binL + 1.U, binL), binL)
 //    val bypass = ((new_binD >= sumD / 2.U) && (new_binL <= (maxL + minL) / 2.U)) || (new_binD >= (sumD - (sumD/4.U)).asTypeOf(new_binD))
     val bypass = DLcond3
@@ -435,7 +441,7 @@ class SubDirectory[T <: Data](
     io.resp.bits.UC := new_UC
     io.resp.bits.repl_state := repl_state
     io.resp.bits.next_state := next_state_s2
-    io.resp.bits.isSample := isSampleSets
+    io.resp.bits.isSample := isSampleSets_s2
     io.resp.bits.new_TCUC_s2 := new_TCUC_s2
     io.resp.bits.Dvec := Dvec
     io.resp.bits.Lvec := Lvec
