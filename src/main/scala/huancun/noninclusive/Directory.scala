@@ -446,6 +446,7 @@ class Directory(implicit p: Parameters)
   chromeInfo.Qpc_Value.zipWithIndex.foreach {
     case (m, i) =>
       m := selfResp.bits.chromeInfo.Qpc_Value(i).asUInt
+      assert(selfResp.bits.chromeInfo.Qpc_Value(i) <= 42000.S, "Q_value must less than 42000!")
   }
   chromeInfo.Qpn_Value.zipWithIndex.foreach {
     case (m, i) =>
